@@ -282,7 +282,7 @@ def gerar_html(contas: list) -> str:
   tr:last-child td {{ border-bottom: none; }}
   .vazio {{ color: var(--text-faint); font-size: 13px; padding: 16px 0; }}
 
-  .resize-handle {{ position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: col-resize; user-select: none; z-index: 2; }}
+  .resize-handle {{ position: absolute; top: 0; right: -4px; width: 14px; height: 100%; cursor: col-resize; user-select: none; z-index: 5; }}
   .resize-handle:hover, .resize-handle.resizando {{ background: var(--accent); opacity: 0.5; }}
 
   .btn-filtro-col {{ background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; margin-left: 3px; vertical-align: middle; }}
@@ -685,6 +685,13 @@ document.addEventListener('mouseup', () => {{
   if (!resizando) return;
   const chave = `${{resizando.contaId}}::${{resizando.colKey}}`;
   colWidths[chave] = resizando.th.offsetWidth;
+  resizando.handle.classList.remove('resizando');
+  resizando = null;
+  document.body.style.cursor = '';
+}});
+
+window.addEventListener('blur', () => {{
+  if (!resizando) return;
   resizando.handle.classList.remove('resizando');
   resizando = null;
   document.body.style.cursor = '';
