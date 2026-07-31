@@ -125,11 +125,12 @@ def coletar_dados() -> list:
             {
                 "data": m.get("dDataLancamento", ""),
                 "cliente": m.get("cDesCliente", "-") or "-",
-                "tipoDoc": m.get("cTipoDocumento", "-") or "-",
                 "valor": m.get("nValorDocumento", 0),
                 "situacao": m.get("cSituacao", "-") or "-",
                 "dataConciliacao": (m.get("dDataConciliacao") or "").strip(),
                 "saldo": m.get("nSaldo", 0),
+                "categoria": m.get("cDesCategoria", "-") or "-",
+                "observacao": (m.get("cObservacoes") or "").strip() or "-",
             }
             for m in extrato["movimentos"]
         ]
@@ -273,11 +274,16 @@ def gerar_html(contas: list) -> str:
   }}
   section > div:first-child h2 {{ margin-top: 8px; }}
 
-  table {{ width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 12.5px; background: var(--bg-panel); border-radius: var(--radius-sm); overflow: hidden; }}
-  th, td {{ text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }}
-  th {{ color: var(--text-muted); font-weight: 600; white-space: nowrap; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }}
+  .tabela-wrap {{ overflow-x: auto; border-radius: var(--radius-sm); }}
+  table {{ table-layout: fixed; border-collapse: collapse; margin-bottom: 8px; font-size: 12.5px; background: var(--bg-panel); }}
+  th, td {{ text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  th {{ position: relative; color: var(--text-muted); font-weight: 600; white-space: nowrap; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }}
+  th .th-label {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
   tr:last-child td {{ border-bottom: none; }}
   .vazio {{ color: var(--text-faint); font-size: 13px; padding: 16px 0; }}
+
+  .resize-handle {{ position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: col-resize; user-select: none; z-index: 2; }}
+  .resize-handle:hover, .resize-handle.resizando {{ background: var(--accent); opacity: 0.5; }}
 
   .btn-filtro-col {{ background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; margin-left: 3px; vertical-align: middle; }}
   .btn-filtro-col:hover {{ background: var(--border); color: var(--text); }}
@@ -369,8 +375,9 @@ const DADOS = {dados_json};
 const COLUNAS = [
   {{ key: 'data', label: 'Data Pagamento/Recebimento', get: l => l.data }},
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente }},
-  {{ key: 'tipoDoc', label: 'Tipo Doc.', get: l => l.tipoDoc }},
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
+  {{ key: 'categoria', label: 'Categoria', get: l => l.categoria }},
+  {{ key: 'observacao', label: 'Observação', get: l => l.observacao }},
   {{ key: 'situacao', label: 'Situação', get: l => l.situacao }},
   {{ key: 'dataConciliacao', label: 'Data Conciliação', get: l => l.dataConciliacao || '-' }},
 ];
@@ -381,6 +388,15 @@ let colFiltros = {{}};
 // Guarda, a cada renderização, a lista já filtrada pelo painel superior (antes do filtro de coluna),
 // usada para montar as opções disponíveis em cada dropdown.
 let baseFiltradosPorConta = {{}};
+
+// Larguras de coluna (redimensionáveis pelo usuário, arrastando a borda do cabeçalho).
+// Chave "contaId::coluna" -> largura em px. Sem entrada = usa o padrão abaixo.
+let colWidths = {{}};
+const LARGURA_PADRAO = {{
+  data: 150, cliente: 200, valor: 110, categoria: 160,
+  observacao: 240, situacao: 120, dataConciliacao: 150,
+}};
+let resizando = null;
 
 function paraDataISO(brDate) {{
   if (!brDate) return null;
@@ -595,27 +611,35 @@ function renderizar() {{
       <tr>
         <td>${{l.data}}</td>
         <td>${{l.cliente}}</td>
-        <td>${{l.tipoDoc}}</td>
         <td>${{fmtMoeda(l.valor)}}</td>
+        <td>${{l.categoria}}</td>
+        <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
         <td>${{l.situacao}}</td>
         <td>${{l.dataConciliacao || '-'}}</td>
       </tr>
     `).join('');
 
     const headerHtml = COLUNAS.map(col => {{
-      const chave = `${{conta.id}}::${{col.key}}`;
-      const ativo = colFiltros[chave] ? 'ativo' : '';
-      return `<th>${{col.label}} <button type="button" class="btn-filtro-col ${{ativo}}" data-conta="${{conta.id}}" data-col="${{col.key}}">▾</button></th>`;
+      const chaveFiltro = `${{conta.id}}::${{col.key}}`;
+      const ativo = colFiltros[chaveFiltro] ? 'ativo' : '';
+      const largura = colWidths[chaveFiltro] || LARGURA_PADRAO[col.key] || 150;
+      return `<th style="width:${{largura}}px">
+        <span class="th-label">${{col.label}}</span>
+        <button type="button" class="btn-filtro-col ${{ativo}}" data-conta="${{conta.id}}" data-col="${{col.key}}">▾</button>
+        <div class="resize-handle" data-conta="${{conta.id}}" data-col="${{col.key}}"></div>
+      </th>`;
     }}).join('');
 
     const secao = document.createElement('div');
     secao.innerHTML = `
       <h2>${{conta.nome}} — ${{tipoLabel}} (amostra de até 30 lançamentos, de ${{filtrados.length}} filtrados)</h2>
       ${{amostra.length ? `
-        <table>
-          <tr>${{headerHtml}}</tr>
-          ${{linhasHtml}}
-        </table>
+        <div class="tabela-wrap">
+          <table>
+            <tr>${{headerHtml}}</tr>
+            ${{linhasHtml}}
+          </table>
+        </div>
       ` : '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
     `;
     secoesContainer.appendChild(secao);
@@ -630,6 +654,40 @@ document.getElementById('secoesContainer').addEventListener('click', (e) => {{
   const colKey = btn.dataset.col;
   const col = COLUNAS.find(c => c.key === colKey);
   if (col) abrirDropdownColuna(contaId, col, btn);
+}});
+
+// Redimensionamento de colunas (arrastar a borda direita do cabeçalho).
+document.getElementById('secoesContainer').addEventListener('mousedown', (e) => {{
+  const handle = e.target.closest('.resize-handle');
+  if (!handle) return;
+  e.preventDefault();
+  const th = handle.closest('th');
+  resizando = {{
+    contaId: handle.dataset.conta,
+    colKey: handle.dataset.col,
+    startX: e.clientX,
+    startWidth: th.offsetWidth,
+    th,
+    handle,
+  }};
+  handle.classList.add('resizando');
+  document.body.style.cursor = 'col-resize';
+}});
+
+document.addEventListener('mousemove', (e) => {{
+  if (!resizando) return;
+  const delta = e.clientX - resizando.startX;
+  const novaLargura = Math.max(60, resizando.startWidth + delta);
+  resizando.th.style.width = novaLargura + 'px';
+}});
+
+document.addEventListener('mouseup', () => {{
+  if (!resizando) return;
+  const chave = `${{resizando.contaId}}::${{resizando.colKey}}`;
+  colWidths[chave] = resizando.th.offsetWidth;
+  resizando.handle.classList.remove('resizando');
+  resizando = null;
+  document.body.style.cursor = '';
 }});
 
 // Data "até" default = hoje
