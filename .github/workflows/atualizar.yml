@@ -1,0 +1,49 @@
+name: Atualizar dashboard Omie
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+    - cron: "0 20 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Rodar script de atualização
+        env:
+          OMIE_APP_KEY: ${{ secrets.OMIE_APP_KEY }}
+          OMIE_APP_SECRET: ${{ secrets.OMIE_APP_SECRET }}
+        run: python scripts/atualizar_dashboard.py
+
+      - name: Publicar artefato do Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  publicar:
+    needs: atualizar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy no GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
