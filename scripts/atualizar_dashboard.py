@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Atualiza um dashboard HTML estático com dados Financeiros
-puxados direto da API da Omie.
+Atualiza um dashboard HTML estático com dados Financeiros (extrato de
+contas bancárias conciliadas + extrato de cartões de crédito) puxados
+direto da API da Omie.
 """
 
 import os
@@ -13,6 +14,25 @@ APP_SECRET = os.environ["OMIE_APP_SECRET"]
 
 BASE_URL = "https://app.omie.com.br/api/v1"
 HEADERS = {"Content-Type": "application/json"}
+
+# Período de análise
+PERIODO_INICIAL = "01/01/2026"
+PERIODO_FINAL = "30/06/2026"
+
+# Contas bancárias "de verdade" — só entram lançamentos CONCILIADOS
+CONTAS_BANCARIAS = [
+    {"nome": "Sicoob Matriz", "nCodCC": 11213271714},
+    {"nome": "Itaú Unibanco", "nCodCC": 11214288866},
+    {"nome": "Santander", "nCodCC": 11236843385},
+    {"nome": "Sicredi", "nCodCC": 11239054225},
+    {"nome": "Bradesco", "nCodCC": 11431467344},
+]
+
+# Cartões de crédito — TODOS os lançamentos do período, sem filtro de conciliação
+CONTAS_CARTAO = [
+    {"nome": "Cartão Sicoob", "nCodCC": 11574015480},
+    {"nome": "Cartão Itaú", "nCodCC": 11693512362},
+]
 
 
 def chamar_omie(modulo: str, call: str, param: dict) -> dict:
@@ -32,56 +52,53 @@ def chamar_omie(modulo: str, call: str, param: dict) -> dict:
     return data
 
 
-def buscar_contas_pagar(pagina: int = 1) -> dict:
-    return chamar_omie(
-        "financas/contapagar",
-        "ListarContasPagar",
+def buscar_extrato(nCodCC: int) -> list:
+    """Busca o extrato completo de uma conta no período definido."""
+    data = chamar_omie(
+        "financas/extrato",
+        "ListarExtrato",
         {
-            "pagina": pagina,
-            "registros_por_pagina": 200,
-            "apenas_importado_api": "N",
+            "nCodCC": nCodCC,
+            "cCodIntCC": "",
+            "dPeriodoInicial": PERIODO_INICIAL,
+            "dPeriodoFinal": PERIODO_FINAL,
         },
     )
-
-
-def buscar_contas_receber(pagina: int = 1) -> dict:
-    return chamar_omie(
-        "financas/contareceber",
-        "ListarContasReceber",
-        {
-            "pagina": pagina,
-            "registros_por_pagina": 200,
-            "apenas_importado_api": "N",
-        },
-    )
+    return data.get("listaMovimentos", []) or []
 
 
 def resumo_financeiro() -> dict:
-    pagar = buscar_contas_pagar()
-    receber = buscar_contas_receber()
+    contas_resultado = []
 
-    contas_pagar = pagar.get("conta_pagar_cadastro", [])
-    contas_receber = receber.get("conta_receber_cadastro", [])
+    # --- Contas bancárias: só lançamentos conciliados ---
+    for conta in CONTAS_BANCARIAS:
+        movimentos = buscar_extrato(conta["nCodCC"])
+        conciliados = [
+            m for m in movimentos
+            if (m.get("dDataConciliacao") or "").strip()
+        ]
+        total = sum(m.get("nValorDocumento", 0) for m in conciliados)
+        contas_resultado.append({
+            "nome": conta["nome"],
+            "tipo": "Conta Bancária (conciliado)",
+            "qtd": len(conciliados),
+            "total": total,
+            "lancamentos": conciliados[:15],
+        })
 
-    total_pagar_aberto = sum(
-        c.get("valor_documento", 0)
-        for c in contas_pagar
-        if c.get("status_titulo") in ("ABERTO", "ATRASADO")
-    )
-    total_receber_aberto = sum(
-        c.get("valor_documento", 0)
-        for c in contas_receber
-        if c.get("status_titulo") in ("ABERTO", "ATRASADO")
-    )
+    # --- Cartões de crédito: todos os lançamentos do período ---
+    for conta in CONTAS_CARTAO:
+        movimentos = buscar_extrato(conta["nCodCC"])
+        total = sum(m.get("nValorDocumento", 0) for m in movimentos)
+        contas_resultado.append({
+            "nome": conta["nome"],
+            "tipo": "Cartão de Crédito",
+            "qtd": len(movimentos),
+            "total": total,
+            "lancamentos": movimentos[:15],
+        })
 
-    return {
-        "total_pagar_aberto": total_pagar_aberto,
-        "total_receber_aberto": total_receber_aberto,
-        "qtd_contas_pagar": len(contas_pagar),
-        "qtd_contas_receber": len(contas_receber),
-        "contas_pagar": contas_pagar[:20],
-        "contas_receber": contas_receber[:20],
-    }
+    return {"contas": contas_resultado}
 
 
 def gerar_html(fin: dict) -> str:
@@ -90,20 +107,32 @@ def gerar_html(fin: dict) -> str:
     def fmt_moeda(v):
         return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-    linhas_pagar = "".join(
-        f"<tr><td>{c.get('fornecedor', {}).get('nome', '-') if isinstance(c.get('fornecedor'), dict) else '-'}</td>"
-        f"<td>{c.get('data_vencimento','-')}</td>"
-        f"<td>{fmt_moeda(c.get('valor_documento',0))}</td>"
-        f"<td>{c.get('status_titulo','-')}</td></tr>"
-        for c in fin["contas_pagar"]
+    cards_html = "".join(
+        f'<div class="card"><div class="label">{c["nome"]} — {c["tipo"]}</div>'
+        f'<div class="valor">{fmt_moeda(c["total"])}</div>'
+        f'<div class="qtd">{c["qtd"]} lançamento(s)</div></div>'
+        for c in fin["contas"]
     )
-    linhas_receber = "".join(
-        f"<tr><td>{c.get('cliente', {}).get('nome', '-') if isinstance(c.get('cliente'), dict) else '-'}</td>"
-        f"<td>{c.get('data_vencimento','-')}</td>"
-        f"<td>{fmt_moeda(c.get('valor_documento',0))}</td>"
-        f"<td>{c.get('status_titulo','-')}</td></tr>"
-        for c in fin["contas_receber"]
-    )
+
+    secoes_html = ""
+    for c in fin["contas"]:
+        linhas = "".join(
+            f"<tr><td>{m.get('dDataLancamento','-')}</td>"
+            f"<td>{m.get('cDesCliente','-')}</td>"
+            f"<td>{m.get('cTipoDocumento','-')}</td>"
+            f"<td>{fmt_moeda(m.get('nValorDocumento',0))}</td>"
+            f"<td>{m.get('cSituacao','-')}</td>"
+            f"<td>{m.get('dDataConciliacao','-') or '-'}</td></tr>"
+            for m in c["lancamentos"]
+        )
+        secoes_html += f"""
+  <h2>{c['nome']} — {c['tipo']} (amostra)</h2>
+  <table>
+    <tr><th>Data</th><th>Cliente/Fornecedor</th><th>Tipo Doc.</th><th>Valor</th><th>Situação</th><th>Data Conciliação</th></tr>
+    {linhas if linhas else '<tr><td colspan="6">Nenhum lançamento no período.</td></tr>'}
+  </table>
+"""
+
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -115,13 +144,15 @@ def gerar_html(fin: dict) -> str:
   header {{ padding: 24px 32px; background: #1e293b; border-bottom: 1px solid #334155; }}
   h1 {{ margin: 0; font-size: 20px; }}
   .atualizado {{ color: #94a3b8; font-size: 13px; margin-top: 4px; }}
+  .periodo {{ color: #64748b; font-size: 12px; margin-top: 2px; }}
   .cards {{ display: flex; gap: 16px; flex-wrap: wrap; padding: 24px 32px; }}
-  .card {{ background: #1e293b; border-radius: 10px; padding: 18px 22px; min-width: 180px; border: 1px solid #334155; }}
+  .card {{ background: #1e293b; border-radius: 10px; padding: 18px 22px; min-width: 200px; border: 1px solid #334155; }}
   .card .label {{ font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }}
-  .card .valor {{ font-size: 24px; font-weight: 700; margin-top: 6px; }}
+  .card .valor {{ font-size: 22px; font-weight: 700; margin-top: 6px; }}
+  .card .qtd {{ font-size: 11px; color: #64748b; margin-top: 4px; }}
   section {{ padding: 8px 32px 32px; }}
-  h2 {{ font-size: 16px; color: #cbd5e1; border-bottom: 1px solid #334155; padding-bottom: 8px; }}
-  table {{ width: 100%; border-collapse: collapse; margin-bottom: 32px; font-size: 13px; }}
+  h2 {{ font-size: 16px; color: #cbd5e1; border-bottom: 1px solid #334155; padding-bottom: 8px; margin-top: 28px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }}
   th, td {{ text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e293b; }}
   th {{ color: #94a3b8; font-weight: 600; }}
 </style>
@@ -130,27 +161,15 @@ def gerar_html(fin: dict) -> str:
 <header>
   <h1>Dashboard Prime Sol — Financeiro</h1>
   <div class="atualizado">Última atualização: {agora}</div>
+  <div class="periodo">Período: {PERIODO_INICIAL} a {PERIODO_FINAL}</div>
 </header>
 
 <div class="cards">
-  <div class="card"><div class="label">Contas a pagar (aberto)</div><div class="valor">{fmt_moeda(fin['total_pagar_aberto'])}</div></div>
-  <div class="card"><div class="label">Contas a receber (aberto)</div><div class="valor">{fmt_moeda(fin['total_receber_aberto'])}</div></div>
-  <div class="card"><div class="label">Qtd. contas a pagar</div><div class="valor">{fin['qtd_contas_pagar']}</div></div>
-  <div class="card"><div class="label">Qtd. contas a receber</div><div class="valor">{fin['qtd_contas_receber']}</div></div>
+  {cards_html}
 </div>
 
 <section>
-  <h2>Contas a Pagar (amostra)</h2>
-  <table>
-    <tr><th>Fornecedor</th><th>Vencimento</th><th>Valor</th><th>Status</th></tr>
-    {linhas_pagar}
-  </table>
-
-  <h2>Contas a Receber (amostra)</h2>
-  <table>
-    <tr><th>Cliente</th><th>Vencimento</th><th>Valor</th><th>Status</th></tr>
-    {linhas_receber}
-  </table>
+  {secoes_html}
 </section>
 
 </body>
