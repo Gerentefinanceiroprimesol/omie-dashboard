@@ -153,7 +153,7 @@ def buscar_movimentos_departamento(nCodCC: int, nomes_departamento: dict) -> dic
                 "ListarMovimentos",
                 {
                     "nPagina": pagina,
-                    "nRegPorPagina": 200,
+                    "nRegPorPagina": 100,
                     "nCodCC": nCodCC,
                     "dDtPagtoDe": ini,
                     "dDtPagtoAte": fim,
