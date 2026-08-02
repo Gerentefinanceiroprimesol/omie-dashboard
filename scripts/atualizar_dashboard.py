@@ -116,61 +116,85 @@ def buscar_extrato(nCodCC: int) -> dict:
     }
 
 
-def buscar_titulos_paginados(modulo: str, call: str, chave_lista: str) -> list:
-    """Busca todos os títulos (contas a pagar OU a receber) do período,
-    percorrendo todas as páginas. Usado para montar a tabela de consulta
-    de departamento (que não vem no extrato bancário, só nos títulos)."""
+def buscar_departamentos_cadastro() -> dict:
+    """Busca a tabela de departamentos cadastrados (código -> nome).
+    É uma lista pequena e estável, buscada uma única vez."""
     todos = []
     pagina = 1
     while True:
         data = chamar_omie(
-            modulo,
-            call,
-            {
-                "pagina": pagina,
-                "registros_por_pagina": 200,
-                "apenas_importado_api": "N",
-                "filtrar_por_emissao_de": PERIODO_INICIAL,
-                "filtrar_por_emissao_ate": PERIODO_FINAL,
-            },
+            "geral/departamentos",
+            "ListarDepartamentos",
+            {"pagina": pagina, "registros_por_pagina": 100},
         )
-        lote = data.get(chave_lista, []) or []
+        lote = data.get("departamentos", []) or []
         todos.extend(lote)
         total_paginas = data.get("total_de_paginas", 1)
         if pagina >= total_paginas or not lote:
             break
         pagina += 1
-    return todos
+    return {d["codigo"]: d["descricao"] for d in todos}
+
+
+def buscar_movimentos_departamento(nCodCC: int, nomes_departamento: dict) -> dict:
+    """Busca os Movimentos Financeiros de uma conta (mês a mês, para evitar
+    o limite de registros por chamada), pedindo a distribuição por
+    departamento. Monta {nCodMovCC: descrição do departamento}.
+
+    nCodMovCC é o mesmo código que aparece no extrato bancário como
+    nCodLancamento — essa é a ponte confirmada entre os dois endpoints.
+    """
+    lookup = {}
+    for ini, fim in gerar_meses(PERIODO_INICIAL, PERIODO_FINAL):
+        pagina = 1
+        while True:
+            data = chamar_omie(
+                "financas/mf",
+                "ListarMovimentos",
+                {
+                    "nPagina": pagina,
+                    "nRegPorPagina": 200,
+                    "nCodCC": nCodCC,
+                    "dDtPagtoDe": ini,
+                    "dDtPagtoAte": fim,
+                    "cExibirDepartamentos": "S",
+                },
+            )
+            movimentos = data.get("movimentos", []) or []
+            for mov in movimentos:
+                detalhes = mov.get("detalhes", {}) or {}
+                cod_mov = detalhes.get("nCodMovCC")
+                deptos = mov.get("departamentos") or []
+                if not cod_mov or not deptos:
+                    continue
+                if len(deptos) == 1:
+                    cod_dep = deptos[0].get("cCodDepartamento")
+                    desc = nomes_departamento.get(cod_dep, cod_dep or "-")
+                else:
+                    partes = []
+                    for d in deptos:
+                        cod_dep = d.get("cCodDepartamento")
+                        nome = nomes_departamento.get(cod_dep, cod_dep or "-")
+                        pct = d.get("nDistrPercentual", 0)
+                        partes.append(f"{nome} ({pct:.0f}%)")
+                    desc = "; ".join(partes)
+                lookup[cod_mov] = desc
+            total_paginas = data.get("nTotPaginas", 1)
+            if pagina >= total_paginas or not movimentos:
+                break
+            pagina += 1
+    return lookup
 
 
 def montar_lookup_departamento() -> dict:
-    """Monta um dicionário {codigo_lancamento_omie: descrição do departamento}
-    cruzando Contas a Pagar e Contas a Receber do período. O extrato bancário
-    não traz departamento diretamente — só o título tem essa informação."""
-    lookup = {}
-
-    titulos_pagar = buscar_titulos_paginados(
-        "financas/contapagar", "ListarContasPagar", "conta_pagar_cadastro"
-    )
-    titulos_receber = buscar_titulos_paginados(
-        "financas/contareceber", "ListarContasReceber", "conta_receber_cadastro"
-    )
-
-    for titulo in titulos_pagar + titulos_receber:
-        codigo = titulo.get("codigo_lancamento_omie")
-        distribuicao = titulo.get("distribuicao") or []
-        if not codigo or not distribuicao:
-            continue
-        if len(distribuicao) == 1:
-            desc = distribuicao[0].get("cDesDep", "-")
-        else:
-            desc = "; ".join(
-                f"{d.get('cDesDep', '-')} ({d.get('nPerDep', 0):.0f}%)"
-                for d in distribuicao
-            )
-        lookup[codigo] = desc
-
-    return lookup
+    """Monta {nCodMovCC: descrição do departamento} cruzando o cadastro de
+    departamentos com os Movimentos Financeiros de cada conta."""
+    nomes_departamento = buscar_departamentos_cadastro()
+    lookup_geral = {}
+    for conta in CONTAS:
+        lookup_conta = buscar_movimentos_departamento(conta["nCodCC"], nomes_departamento)
+        lookup_geral.update(lookup_conta)
+    return lookup_geral
 
 
 def coletar_dados() -> list:
@@ -191,7 +215,7 @@ def coletar_dados() -> list:
                 "categoria": m.get("cDesCategoria", "-") or "-",
                 "observacao": (m.get("cObservacoes") or "").strip() or "-",
                 "departamento": lookup_departamento.get(
-                    m.get("nCodLancRelac") or m.get("nCodLancamento"), "-"
+                    m.get("nCodLancamento") or m.get("nCodLancRelac"), "-"
                 ),
             }
             for m in extrato["movimentos"]
@@ -350,6 +374,9 @@ def gerar_html(contas: list) -> str:
   .btn-filtro-col {{ background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; margin-left: 3px; vertical-align: middle; }}
   .btn-filtro-col:hover {{ background: var(--border); color: var(--text); }}
   .btn-filtro-col.ativo {{ color: var(--green); font-weight: 700; }}
+
+  .btn-largura {{ background: var(--border); border: none; color: var(--text); cursor: pointer; font-size: 11px; width: 16px; height: 16px; line-height: 16px; border-radius: 3px; padding: 0; margin-left: 2px; vertical-align: middle; }}
+  .btn-largura:hover {{ background: var(--accent); }}
 
   .dropdown-filtro {{ position: fixed; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; z-index: 1000; width: 240px; box-shadow: 0 12px 32px rgba(0,0,0,0.5); }}
   .dropdown-busca {{ width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-bottom: 8px; }}
@@ -733,16 +760,26 @@ function renderizar() {{
     return `<th style="width:${{largura}}px">
       <span class="th-label">${{col.label}}</span>
       <button type="button" class="btn-filtro-col ${{ativo}}" data-col="${{col.key}}">▾</button>
+      <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="-20" title="Diminuir largura">−</button>
+      <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="20" title="Aumentar largura">+</button>
       <div class="resize-handle" data-col="${{col.key}}"></div>
     </th>`;
   }}).join('');
+
+  // table-layout:fixed só respeita as larguras das colunas se a própria <table>
+  // tiver uma largura explícita — sem isso, o navegador ignora nossos valores
+  // e recalcula pelo conteúdo. Por isso somamos e aplicamos aqui.
+  const larguraTotalTabela = COLUNAS.reduce(
+    (soma, col) => soma + (colWidths[col.key] || LARGURA_PADRAO[col.key] || 150),
+    0
+  );
 
   const secao = document.createElement('div');
   secao.innerHTML = `
     <h2>Lançamentos (amostra de até 100, de ${{filtrados.length}} filtrados)</h2>
     ${{amostra.length ? `
       <div class="tabela-wrap">
-        <table>
+        <table style="width:${{larguraTotalTabela}}px">
           <tr>${{headerHtml}}</tr>
           ${{linhasHtml}}
           ${{linhaTotalHtml}}
@@ -755,6 +792,16 @@ function renderizar() {{
 
 // Delegação de clique para os botões de filtro de coluna (eles são recriados a cada renderização).
 document.getElementById('secoesContainer').addEventListener('click', (e) => {{
+  const btnLargura = e.target.closest('.btn-largura');
+  if (btnLargura) {{
+    const colKey = btnLargura.dataset.col;
+    const delta = parseInt(btnLargura.dataset.delta, 10);
+    const larguraAtual = colWidths[colKey] || LARGURA_PADRAO[colKey] || 150;
+    colWidths[colKey] = Math.max(60, larguraAtual + delta);
+    renderizar();
+    return;
+  }}
+
   const btn = e.target.closest('.btn-filtro-col');
   if (!btn) return;
   const colKey = btn.dataset.col;
@@ -792,6 +839,7 @@ document.addEventListener('mouseup', () => {{
   resizando.handle.classList.remove('resizando');
   resizando = null;
   document.body.style.cursor = '';
+  renderizar();
 }});
 
 window.addEventListener('blur', () => {{
