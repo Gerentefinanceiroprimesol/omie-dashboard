@@ -2,9 +2,11 @@ name: Atualizar dashboard Omie
 
 on:
   schedule:
-    - cron: "0 11 * * *"
-    - cron: "0 20 * * *"
-  workflow_dispatch: {}
+    # Horários em UTC. Campos dos Goytacazes está em UTC-3.
+    # 12:00 local -> 15:00 UTC | 20:00 local -> 23:00 UTC
+    - cron: "0 15 * * *"
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}   # permite rodar manualmente pelo botão "Run workflow"
 
 permissions:
   contents: write
