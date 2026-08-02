@@ -118,15 +118,21 @@ def buscar_extrato(nCodCC: int) -> dict:
 
 def buscar_departamentos_cadastro() -> dict:
     """Busca a tabela de departamentos cadastrados (código -> nome).
-    É uma lista pequena e estável, buscada uma única vez."""
+    É uma lista pequena e estável, buscada uma única vez. Se falhar,
+    retorna vazio — nesse caso os códigos de departamento aparecem
+    "crus" no dashboard em vez do nome, mas o script não trava."""
     todos = []
     pagina = 1
     while True:
-        data = chamar_omie(
-            "geral/departamentos",
-            "ListarDepartamentos",
-            {"pagina": pagina, "registros_por_pagina": 100},
-        )
+        try:
+            data = chamar_omie(
+                "geral/departamentos",
+                "ListarDepartamentos",
+                {"pagina": pagina, "registros_por_pagina": 100},
+            )
+        except Exception as erro:
+            print(f"AVISO: falha ao buscar catálogo de departamentos (página {pagina}): {erro}")
+            break
         lote = data.get("departamentos", []) or []
         todos.extend(lote)
         total_paginas = data.get("total_de_paginas", 1)
@@ -143,23 +149,37 @@ def buscar_movimentos_departamento(nCodCC: int, nomes_departamento: dict) -> dic
 
     nCodMovCC é o mesmo código que aparece no extrato bancário como
     nCodLancamento — essa é a ponte confirmada entre os dois endpoints.
+
+    Se alguma chamada falhar (a Omie retornou erro 500 em algumas
+    combinações de conta/mês/página durante os testes), o erro é
+    registrado e a busca segue para o próximo mês, em vez de travar o
+    script inteiro — melhor ter departamento incompleto do que o
+    dashboard inteiro não ser publicado.
     """
     lookup = {}
     for ini, fim in gerar_meses(PERIODO_INICIAL, PERIODO_FINAL):
         pagina = 1
         while True:
-            data = chamar_omie(
-                "financas/mf",
-                "ListarMovimentos",
-                {
-                    "nPagina": pagina,
-                    "nRegPorPagina": 100,
-                    "nCodCC": nCodCC,
-                    "dDtPagtoDe": ini,
-                    "dDtPagtoAte": fim,
-                    "cExibirDepartamentos": "S",
-                },
-            )
+            try:
+                data = chamar_omie(
+                    "financas/mf",
+                    "ListarMovimentos",
+                    {
+                        "nPagina": pagina,
+                        "nRegPorPagina": 100,
+                        "nCodCC": nCodCC,
+                        "dDtPagtoDe": ini,
+                        "dDtPagtoAte": fim,
+                        "cExibirDepartamentos": "S",
+                    },
+                )
+            except Exception as erro:
+                print(
+                    f"AVISO: falha ao buscar departamento (conta {nCodCC}, "
+                    f"período {ini}-{fim}, página {pagina}): {erro}"
+                )
+                break
+
             movimentos = data.get("movimentos", []) or []
             for mov in movimentos:
                 detalhes = mov.get("detalhes", {}) or {}
@@ -179,6 +199,7 @@ def buscar_movimentos_departamento(nCodCC: int, nomes_departamento: dict) -> dic
                         partes.append(f"{nome} ({pct:.0f}%)")
                     desc = "; ".join(partes)
                 lookup[cod_mov] = desc
+
             total_paginas = data.get("nTotPaginas", 1)
             if pagina >= total_paginas or not movimentos:
                 break
