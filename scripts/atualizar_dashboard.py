@@ -116,8 +116,67 @@ def buscar_extrato(nCodCC: int) -> dict:
     }
 
 
+def buscar_titulos_paginados(modulo: str, call: str, chave_lista: str) -> list:
+    """Busca todos os títulos (contas a pagar OU a receber) do período,
+    percorrendo todas as páginas. Usado para montar a tabela de consulta
+    de departamento (que não vem no extrato bancário, só nos títulos)."""
+    todos = []
+    pagina = 1
+    while True:
+        data = chamar_omie(
+            modulo,
+            call,
+            {
+                "pagina": pagina,
+                "registros_por_pagina": 200,
+                "apenas_importado_api": "N",
+                "filtrar_por_emissao_de": PERIODO_INICIAL,
+                "filtrar_por_emissao_ate": PERIODO_FINAL,
+            },
+        )
+        lote = data.get(chave_lista, []) or []
+        todos.extend(lote)
+        total_paginas = data.get("total_de_paginas", 1)
+        if pagina >= total_paginas or not lote:
+            break
+        pagina += 1
+    return todos
+
+
+def montar_lookup_departamento() -> dict:
+    """Monta um dicionário {codigo_lancamento_omie: descrição do departamento}
+    cruzando Contas a Pagar e Contas a Receber do período. O extrato bancário
+    não traz departamento diretamente — só o título tem essa informação."""
+    lookup = {}
+
+    titulos_pagar = buscar_titulos_paginados(
+        "financas/contapagar", "ListarContasPagar", "conta_pagar_cadastro"
+    )
+    titulos_receber = buscar_titulos_paginados(
+        "financas/contareceber", "ListarContasReceber", "conta_receber_cadastro"
+    )
+
+    for titulo in titulos_pagar + titulos_receber:
+        codigo = titulo.get("codigo_lancamento_omie")
+        distribuicao = titulo.get("distribuicao") or []
+        if not codigo or not distribuicao:
+            continue
+        if len(distribuicao) == 1:
+            desc = distribuicao[0].get("cDesDep", "-")
+        else:
+            desc = "; ".join(
+                f"{d.get('cDesDep', '-')} ({d.get('nPerDep', 0):.0f}%)"
+                for d in distribuicao
+            )
+        lookup[codigo] = desc
+
+    return lookup
+
+
 def coletar_dados() -> list:
     """Coleta os dados brutos de todas as contas, sem aplicar nenhum filtro."""
+    lookup_departamento = montar_lookup_departamento()
+
     resultado = []
     for conta in CONTAS:
         extrato = buscar_extrato(conta["nCodCC"])
@@ -131,6 +190,9 @@ def coletar_dados() -> list:
                 "saldo": m.get("nSaldo", 0),
                 "categoria": m.get("cDesCategoria", "-") or "-",
                 "observacao": (m.get("cObservacoes") or "").strip() or "-",
+                "departamento": lookup_departamento.get(
+                    m.get("nCodLancRelac") or m.get("nCodLancamento"), "-"
+                ),
             }
             for m in extrato["movimentos"]
         ]
@@ -147,18 +209,6 @@ def coletar_dados() -> list:
 def gerar_html(contas: list) -> str:
     agora = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     dados_json = jsonlib.dumps(contas, ensure_ascii=False)
-
-    checkboxes_html = ""
-    for grupo, titulo in (("banco", "Contas Bancárias"), ("cartao", "Cartões de Crédito")):
-        itens = [c for c in contas if c["tipo"] == grupo]
-        if not itens:
-            continue
-        checkboxes_html += f'<div class="grupo-check"><strong>{titulo}</strong>'
-        for c in itens:
-            checkboxes_html += (
-                f'<label><input type="checkbox" class="chk-conta" value="{c["id"]}" checked> {c["nome"]}</label>'
-            )
-        checkboxes_html += "</div>"
 
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -267,6 +317,16 @@ def gerar_html(contas: list) -> str:
   .valor.saldo {{ color: var(--text); font-size: 16px; }}
   .card .qtd {{ font-size: 11px; color: var(--text-faint); margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }}
 
+  .card-departamento-wrap {{ padding: 0 32px; margin-top: 4px; }}
+  .card-departamento {{ max-width: none; }}
+  .card-departamento .label {{ margin-bottom: 12px; }}
+  .linha-depto {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }}
+  .linha-depto .nome-depto {{ flex: 0 0 200px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .linha-depto .barra-wrap {{ flex: 1; background: var(--bg); border-radius: 4px; height: 8px; overflow: hidden; }}
+  .linha-depto .barra {{ height: 100%; background: var(--accent); border-radius: 4px; }}
+  .linha-depto .pct-depto {{ flex: 0 0 52px; text-align: right; font-weight: 700; color: var(--text); }}
+  .linha-depto .valor-depto {{ flex: 0 0 110px; text-align: right; color: var(--text-faint); font-size: 12px; }}
+
   section {{ padding: 12px 32px 40px; }}
   h2 {{
     font-size: 14.5px; font-weight: 700; color: var(--text); border-bottom: 1px solid var(--border);
@@ -280,6 +340,8 @@ def gerar_html(contas: list) -> str:
   th {{ position: relative; color: var(--text-muted); font-weight: 600; white-space: nowrap; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }}
   th .th-label {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
   tr:last-child td {{ border-bottom: none; }}
+  tr.linha-total td {{ font-weight: 700; color: var(--text); background: var(--bg-panel); border-top: 2px solid var(--border); border-bottom: none; }}
+  tr.linha-total .valor-total {{ color: var(--cyan); }}
   .vazio {{ color: var(--text-faint); font-size: 13px; padding: 16px 0; }}
 
   .resize-handle {{ position: absolute; top: 0; right: -4px; width: 14px; height: 100%; cursor: col-resize; user-select: none; z-index: 5; }}
@@ -310,11 +372,6 @@ def gerar_html(contas: list) -> str:
 </header>
 
 <div class="filtros">
-  <div class="filtro-bloco">
-    <h3>Contas / Cartões</h3>
-    {checkboxes_html}
-  </div>
-
   <div class="filtro-bloco">
     <h3>Período (data de pagamento/recebimento)</h3>
     <div class="datas">
@@ -365,6 +422,10 @@ def gerar_html(contas: list) -> str:
 
 <div class="cards" id="cardsContainer"></div>
 
+<div class="card-departamento-wrap">
+  <div class="card card-departamento" id="cardDepartamentoContainer"></div>
+</div>
+
 <section id="secoesContainer"></section>
 
 <script>
@@ -377,23 +438,25 @@ const COLUNAS = [
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente }},
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
   {{ key: 'categoria', label: 'Categoria', get: l => l.categoria }},
+  {{ key: 'departamento', label: 'Departamento', get: l => l.departamento }},
+  {{ key: 'conta', label: 'Banco/Cartão', get: l => l.contaNome }},
   {{ key: 'observacao', label: 'Observação', get: l => l.observacao }},
   {{ key: 'situacao', label: 'Situação', get: l => l.situacao }},
   {{ key: 'dataConciliacao', label: 'Data Conciliação', get: l => l.dataConciliacao || '-' }},
 ];
 
-// Estado dos filtros de coluna (estilo Excel): chave "contaId::coluna" -> Set de valores permitidos.
+// Estado dos filtros de coluna (estilo Excel): chave "coluna" -> Set de valores permitidos.
 // Ausência da chave = nenhum filtro ativo nessa coluna (mostra tudo).
 let colFiltros = {{}};
-// Guarda, a cada renderização, a lista já filtrada pelo painel superior (antes do filtro de coluna),
-// usada para montar as opções disponíveis em cada dropdown.
-let baseFiltradosPorConta = {{}};
+// Guarda, a cada renderização, a lista combinada (todas as contas selecionadas)
+// já filtrada pelo painel superior, usada para montar as opções de cada dropdown.
+let baseFiltradosGlobal = [];
 
 // Larguras de coluna (redimensionáveis pelo usuário, arrastando a borda do cabeçalho).
-// Chave "contaId::coluna" -> largura em px. Sem entrada = usa o padrão abaixo.
+// Chave "coluna" -> largura em px. Sem entrada = usa o padrão abaixo.
 let colWidths = {{}};
 const LARGURA_PADRAO = {{
-  data: 150, cliente: 200, valor: 110, categoria: 160,
+  conta: 150, data: 150, cliente: 200, valor: 110, categoria: 160,
   observacao: 240, situacao: 120, dataConciliacao: 150,
 }};
 let resizando = null;
@@ -434,15 +497,10 @@ function calcularSaldoNaData(conta, dataAteISO) {{
   return saldo;
 }}
 
-function contasSelecionadas() {{
-  return Array.from(document.querySelectorAll('.chk-conta:checked')).map(el => el.value);
-}}
-
-function aplicarFiltrosColuna(contaId, lista) {{
+function aplicarFiltrosColuna(lista) {{
   return lista.filter(l => {{
     return COLUNAS.every(col => {{
-      const chave = `${{contaId}}::${{col.key}}`;
-      const permitidos = colFiltros[chave];
+      const permitidos = colFiltros[col.key];
       if (!permitidos) return true;
       return permitidos.has(col.get(l));
     }});
@@ -459,12 +517,10 @@ document.addEventListener('click', (e) => {{
   }}
 }});
 
-function abrirDropdownColuna(contaId, col, btnEl) {{
+function abrirDropdownColuna(col, btnEl) {{
   fecharDropdowns();
-  const chave = `${{contaId}}::${{col.key}}`;
-  const selecionadosAtuais = colFiltros[chave];
-  const baseLista = baseFiltradosPorConta[contaId] || [];
-  const valoresUnicos = [...new Set(baseLista.map(col.get))].sort();
+  const selecionadosAtuais = colFiltros[col.key];
+  const valoresUnicos = [...new Set(baseFiltradosGlobal.map(col.get))].sort();
 
   const dropdown = document.createElement('div');
   dropdown.className = 'dropdown-filtro';
@@ -509,9 +565,9 @@ function abrirDropdownColuna(contaId, col, btnEl) {{
   dropdown.querySelector('.dropdown-ok').addEventListener('click', () => {{
     const marcados = Array.from(dropdown.querySelectorAll('.dropdown-item input:checked')).map(c => c.value);
     if (marcados.length === valoresUnicos.length) {{
-      delete colFiltros[chave];
+      delete colFiltros[col.key];
     }} else {{
-      colFiltros[chave] = new Set(marcados);
+      colFiltros[col.key] = new Set(marcados);
     }}
     fecharDropdowns();
     renderizar();
@@ -521,7 +577,6 @@ function abrirDropdownColuna(contaId, col, btnEl) {{
 }}
 
 function renderizar() {{
-  const idsSelecionados = contasSelecionadas();
   const dataDe = document.getElementById('dataDe').value;
   const dataAte = document.getElementById('dataAte').value;
   const modoConciliacao = document.querySelector('input[name="conciliacao"]:checked').value;
@@ -545,23 +600,11 @@ function renderizar() {{
     ? `Saldo em ${{fmtDataBR(dataAte)}}`
     : `Saldo ao final do período (${{fmtDataBR(dataAte)}})`;
 
+  // Combina os lançamentos de TODAS as contas (não há mais checkbox de seleção
+  // de conta — quem decide quais bancos/cartões aparecem é o filtro estilo
+  // Excel na própria coluna "Banco/Cartão" da tabela).
+  let todosLancamentos = [];
   DADOS.forEach(conta => {{
-    if (!idsSelecionados.includes(conta.id)) return;
-
-    const saldoConta = calcularSaldoNaData(conta, dataAte);
-    const boxSaldo = document.createElement('div');
-    boxSaldo.className = 'box-saldo';
-    boxSaldo.innerHTML = `
-      <div class="label">${{conta.nome}}</div>
-      <div class="valor-saldo">${{fmtMoeda(saldoConta)}}</div>
-      <div class="ref">${{rotuloSaldo}}</div>
-    `;
-    saldosContainer.appendChild(boxSaldo);
-  }});
-
-  DADOS.forEach(conta => {{
-    if (!idsSelecionados.includes(conta.id)) return;
-
     const baseFiltrados = conta.lancamentos.filter(l => {{
       const dataISO = paraDataISO(l.data);
       if (dataDe && dataISO && dataISO < dataDe) return false;
@@ -586,74 +629,137 @@ function renderizar() {{
       return true;
     }});
 
-    baseFiltradosPorConta[conta.id] = baseFiltrados;
-    const filtrados = aplicarFiltrosColuna(conta.id, baseFiltrados);
+    baseFiltrados.forEach(l => todosLancamentos.push({{ ...l, contaNome: conta.nome, contaTipo: conta.tipo }}));
+  }});
 
-    const entradas = filtrados.filter(l => l.valor > 0).reduce((s, l) => s + l.valor, 0);
-    const saidas = filtrados.filter(l => l.valor < 0).reduce((s, l) => s + l.valor, 0);
+  // baseFiltradosGlobal (antes do filtro de coluna) alimenta as opções dos
+  // dropdowns estilo Excel — assim a lista de bancos no dropdown da coluna
+  // "Banco/Cartão" sempre mostra todos os disponíveis, mesmo os que estão
+  // desmarcados no momento (comportamento padrão do Excel).
+  baseFiltradosGlobal = todosLancamentos;
+  const filtrados = aplicarFiltrosColuna(todosLancamentos);
+
+  // --- Card único de distribuição por Departamento (% sobre o valor absoluto total filtrado) ---
+  const cardDepto = document.getElementById('cardDepartamentoContainer');
+  const totalAbsDepto = filtrados.reduce((s, l) => s + Math.abs(l.valor), 0);
+  const somaPorDepto = {{}};
+  filtrados.forEach(l => {{
+    const chave = l.departamento || '-';
+    somaPorDepto[chave] = (somaPorDepto[chave] || 0) + Math.abs(l.valor);
+  }});
+  const linhasDepto = Object.entries(somaPorDepto)
+    .sort((a, b) => b[1] - a[1])
+    .map(([nome, valor]) => {{
+      const pct = totalAbsDepto > 0 ? (valor / totalAbsDepto * 100) : 0;
+      return `
+        <div class="linha-depto">
+          <span class="nome-depto">${{nome}}</span>
+          <div class="barra-wrap"><div class="barra" style="width:${{pct.toFixed(1)}}%"></div></div>
+          <span class="pct-depto">${{pct.toFixed(1)}}%</span>
+          <span class="valor-depto">${{fmtMoeda(valor)}}</span>
+        </div>
+      `;
+    }}).join('');
+  cardDepto.innerHTML = `
+    <div class="label">Distribuição por Departamento (sobre o total filtrado)</div>
+    ${{linhasDepto || '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
+  `;
+
+  // Cards e caixas de saldo agora seguem o resultado FINAL da tabela
+  // (incluindo o filtro de coluna "Banco/Cartão"), agrupando por conta.
+  const contasPresentes = [...new Set(filtrados.map(l => l.contaNome))];
+
+  contasPresentes.forEach(nomeConta => {{
+    const dadosConta = DADOS.find(c => c.nome === nomeConta);
+    const doConta = filtrados.filter(l => l.contaNome === nomeConta);
+
+    if (dadosConta) {{
+      const saldoConta = calcularSaldoNaData(dadosConta, dataAte);
+      const boxSaldo = document.createElement('div');
+      boxSaldo.className = 'box-saldo';
+      boxSaldo.innerHTML = `
+        <div class="label">${{nomeConta}}</div>
+        <div class="valor-saldo">${{fmtMoeda(saldoConta)}}</div>
+        <div class="ref">${{rotuloSaldo}}</div>
+      `;
+      saldosContainer.appendChild(boxSaldo);
+    }}
+
+    const entradas = doConta.filter(l => l.valor > 0).reduce((s, l) => s + l.valor, 0);
+    const saidas = doConta.filter(l => l.valor < 0).reduce((s, l) => s + l.valor, 0);
     const saldo = entradas + saidas;
-
-    const tipoLabel = conta.tipo === 'banco' ? 'Conta Bancária' : 'Cartão de Crédito';
+    const tipoLabel = (dadosConta && dadosConta.tipo === 'banco') ? 'Conta Bancária' : 'Cartão de Crédito';
 
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = `
-      <div class="label">${{conta.nome}} — ${{tipoLabel}}</div>
+      <div class="label">${{nomeConta}} — ${{tipoLabel}}</div>
       <div class="linha-valor"><span class="mini-label">Entradas</span><span class="valor entrada">${{fmtMoeda(entradas)}}</span></div>
       <div class="linha-valor"><span class="mini-label">Saídas</span><span class="valor saida">${{fmtMoeda(saidas)}}</span></div>
       <div class="linha-valor"><span class="mini-label">Saldo</span><span class="valor saldo">${{fmtMoeda(saldo)}}</span></div>
-      <div class="qtd">${{filtrados.length}} lançamento(s)</div>
+      <div class="qtd">${{doConta.length}} lançamento(s)</div>
     `;
     cardsContainer.appendChild(card);
-
-    const amostra = filtrados.slice(0, 30);
-    const linhasHtml = amostra.map(l => `
-      <tr>
-        <td>${{l.data}}</td>
-        <td>${{l.cliente}}</td>
-        <td>${{fmtMoeda(l.valor)}}</td>
-        <td>${{l.categoria}}</td>
-        <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
-        <td>${{l.situacao}}</td>
-        <td>${{l.dataConciliacao || '-'}}</td>
-      </tr>
-    `).join('');
-
-    const headerHtml = COLUNAS.map(col => {{
-      const chaveFiltro = `${{conta.id}}::${{col.key}}`;
-      const ativo = colFiltros[chaveFiltro] ? 'ativo' : '';
-      const largura = colWidths[chaveFiltro] || LARGURA_PADRAO[col.key] || 150;
-      return `<th style="width:${{largura}}px">
-        <span class="th-label">${{col.label}}</span>
-        <button type="button" class="btn-filtro-col ${{ativo}}" data-conta="${{conta.id}}" data-col="${{col.key}}">▾</button>
-        <div class="resize-handle" data-conta="${{conta.id}}" data-col="${{col.key}}"></div>
-      </th>`;
-    }}).join('');
-
-    const secao = document.createElement('div');
-    secao.innerHTML = `
-      <h2>${{conta.nome}} — ${{tipoLabel}} (amostra de até 30 lançamentos, de ${{filtrados.length}} filtrados)</h2>
-      ${{amostra.length ? `
-        <div class="tabela-wrap">
-          <table>
-            <tr>${{headerHtml}}</tr>
-            ${{linhasHtml}}
-          </table>
-        </div>
-      ` : '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
-    `;
-    secoesContainer.appendChild(secao);
   }});
+
+  const amostra = filtrados.slice(0, 100);
+
+  const totalFiltrado = filtrados.reduce((s, l) => s + l.valor, 0);
+  const indiceColunaValor = COLUNAS.findIndex(c => c.key === 'valor');
+  const celulasTotal = COLUNAS.map((col, i) => {{
+    if (i === indiceColunaValor) return `<td class="valor-total">${{fmtMoeda(totalFiltrado)}}</td>`;
+    if (i === 0) return `<td>Total filtrado (${{filtrados.length}} lançamento(s))</td>`;
+    return '<td></td>';
+  }}).join('');
+  const linhaTotalHtml = `<tr class="linha-total">${{celulasTotal}}</tr>`;
+
+  const linhasHtml = amostra.map(l => `
+    <tr>
+      <td>${{l.data}}</td>
+      <td>${{l.cliente}}</td>
+      <td>${{fmtMoeda(l.valor)}}</td>
+      <td>${{l.categoria}}</td>
+      <td>${{l.departamento}}</td>
+      <td>${{l.contaNome}}</td>
+      <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
+      <td>${{l.situacao}}</td>
+      <td>${{l.dataConciliacao || '-'}}</td>
+    </tr>
+  `).join('');
+
+  const headerHtml = COLUNAS.map(col => {{
+    const ativo = colFiltros[col.key] ? 'ativo' : '';
+    const largura = colWidths[col.key] || LARGURA_PADRAO[col.key] || 150;
+    return `<th style="width:${{largura}}px">
+      <span class="th-label">${{col.label}}</span>
+      <button type="button" class="btn-filtro-col ${{ativo}}" data-col="${{col.key}}">▾</button>
+      <div class="resize-handle" data-col="${{col.key}}"></div>
+    </th>`;
+  }}).join('');
+
+  const secao = document.createElement('div');
+  secao.innerHTML = `
+    <h2>Lançamentos (amostra de até 100, de ${{filtrados.length}} filtrados)</h2>
+    ${{amostra.length ? `
+      <div class="tabela-wrap">
+        <table>
+          <tr>${{headerHtml}}</tr>
+          ${{linhasHtml}}
+          ${{linhaTotalHtml}}
+        </table>
+      </div>
+    ` : '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
+  `;
+  secoesContainer.appendChild(secao);
 }}
 
 // Delegação de clique para os botões de filtro de coluna (eles são recriados a cada renderização).
 document.getElementById('secoesContainer').addEventListener('click', (e) => {{
   const btn = e.target.closest('.btn-filtro-col');
   if (!btn) return;
-  const contaId = btn.dataset.conta;
   const colKey = btn.dataset.col;
   const col = COLUNAS.find(c => c.key === colKey);
-  if (col) abrirDropdownColuna(contaId, col, btn);
+  if (col) abrirDropdownColuna(col, btn);
 }});
 
 // Redimensionamento de colunas (arrastar a borda direita do cabeçalho).
@@ -663,7 +769,6 @@ document.getElementById('secoesContainer').addEventListener('mousedown', (e) => 
   e.preventDefault();
   const th = handle.closest('th');
   resizando = {{
-    contaId: handle.dataset.conta,
     colKey: handle.dataset.col,
     startX: e.clientX,
     startWidth: th.offsetWidth,
@@ -683,8 +788,7 @@ document.addEventListener('mousemove', (e) => {{
 
 document.addEventListener('mouseup', () => {{
   if (!resizando) return;
-  const chave = `${{resizando.contaId}}::${{resizando.colKey}}`;
-  colWidths[chave] = resizando.th.offsetWidth;
+  colWidths[resizando.colKey] = resizando.th.offsetWidth;
   resizando.handle.classList.remove('resizando');
   resizando = null;
   document.body.style.cursor = '';
