@@ -357,6 +357,13 @@ def coletar_dados() -> list:
             extrato = buscar_extrato(conta["nCodCC"], empresa["app_key"], empresa["app_secret"])
             lancamentos = []
             for m in extrato["movimentos"]:
+                # A Omie insere linhas artificiais de "corte" de saldo no meio
+                # do extrato (cliente = "SALDO" ou "SALDO ANTERIOR", valor
+                # sempre 0) — não são lançamentos de verdade, só marcadores
+                # internos. Pulamos essas.
+                if (m.get("cDesCliente") or "").strip() in ("SALDO", "SALDO ANTERIOR"):
+                    continue
+
                 cod_mov = m.get("nCodLancamento") or m.get("nCodLancRelac")
                 info_titulo = lookup_titulos.get(cod_mov, {})
 
