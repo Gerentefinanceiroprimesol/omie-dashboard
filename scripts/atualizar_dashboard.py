@@ -310,25 +310,33 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
                 deptos = mov.get("departamentos") or []
                 if not deptos:
                     desc_depto = "-"
+                    lista_depto = [{"nome": "-", "percentual": 100}]
                 elif len(deptos) == 1:
                     cod_dep = deptos[0].get("cCodDepartamento")
-                    desc_depto = nomes_departamento.get(cod_dep, cod_dep or "-")
+                    nome_unico = nomes_departamento.get(cod_dep, cod_dep or "-")
+                    desc_depto = nome_unico
+                    lista_depto = [{"nome": nome_unico, "percentual": 100}]
                 else:
                     partes = []
+                    lista_depto = []
                     for d in deptos:
                         cod_dep = d.get("cCodDepartamento")
                         nome = nomes_departamento.get(cod_dep, cod_dep or "-")
                         pct = d.get("nDistrPercentual", 0)
                         partes.append(f"{nome} ({pct:.0f}%)")
+                        lista_depto.append({"nome": nome, "percentual": pct})
                     desc_depto = "; ".join(partes)
 
                 observacao_titulo = (detalhes.get("observacao") or "").strip()
                 status_titulo = (detalhes.get("cStatus") or "").strip()
+                data_previsao_titulo = (detalhes.get("dDtPrevisao") or "").strip()
 
                 lookup[cod_mov] = {
                     "departamento": desc_depto,
+                    "departamentosRateio": lista_depto,
                     "observacao": observacao_titulo,
                     "status": status_titulo,
+                    "dataPrevisao": data_previsao_titulo,
                 }
 
             total_paginas = data.get("nTotPaginas", 1)
@@ -392,17 +400,54 @@ def coletar_dados() -> list:
                 observacao_extrato = (m.get("cObservacoes") or "").strip()
                 observacao_final = observacao_titulo or observacao_extrato or "-"
 
+                categoria_final = m.get("cDesCategoria", "-") or "-"
+                # Transferências entre contas do PRÓPRIO grupo (ex: "Transf.
+                # Itaú Unibanco >> Sicoob Matriz") não são entrada/saída de
+                # dinheiro de verdade — é o mesmo dinheiro só mudando de
+                # banco. A Omie classifica isso com uma categoria própria
+                # ("Saída de Transferência" / "Entrada de Transferência").
+                # Marcamos aqui para o dashboard poder escondê-las da tabela
+                # e dos cards de Entradas/Saídas/Departamento, sem afetar o
+                # cálculo do saldo real da conta (que usa nSaldo direto da
+                # Omie e continua contando esses lançamentos).
+                transferencia_interna = "transferência" in categoria_final.strip().lower()
+
+                natureza_raw = (m.get("cNatureza") or "").strip().upper()
+                natureza = {"P": "Contas a Pagar", "R": "Contas a Receber"}.get(natureza_raw, "-")
+
+                # A data mostrada na coluna "Data Previsão/Pagamento" precisa
+                # bater com a mesma referência usada para calcular a Situação
+                # (Atrasado/Vence Hoje/A Vencer), senão dá incoerência tipo
+                # "vence hoje" numa data que já passou. Para títulos JÁ
+                # PAGOS, o dDataLancamento do extrato é a data real de
+                # pagamento/recebimento — mantemos ele. Para títulos ainda
+                # NÃO PAGOS, o extrato às vezes usa uma data diferente da
+                # previsão real do título (confirmado em 3 casos reais:
+                # SOLARMARKET, MITRA e Leilson Batista Siqueira) — nesse
+                # caso usamos o dDtPrevisao do ListarMovimentos, que é a
+                # mesma data que gera o status.
+                status_titulo = info_titulo.get("status") or "-"
+                data_prevista_titulo = info_titulo.get("dataPrevisao") or ""
+                data_extrato = m.get("dDataLancamento", "")
+                if status_titulo not in ("PAGO", "RECEBIDO") and data_prevista_titulo:
+                    data_exibida = data_prevista_titulo
+                else:
+                    data_exibida = data_extrato
+
                 lancamentos.append({
-                    "data": m.get("dDataLancamento", ""),
+                    "data": data_exibida,
                     "cliente": m.get("cDesCliente", "-") or "-",
                     "valor": m.get("nValorDocumento", 0),
                     "situacao": m.get("cSituacao", "-") or "-",
-                    "situacaoTitulo": info_titulo.get("status") or "-",
+                    "situacaoTitulo": status_titulo,
                     "dataConciliacao": (m.get("dDataConciliacao") or "").strip(),
                     "saldo": m.get("nSaldo", 0),
-                    "categoria": m.get("cDesCategoria", "-") or "-",
+                    "categoria": categoria_final,
                     "observacao": observacao_final,
                     "departamento": info_titulo.get("departamento", "-"),
+                    "departamentosRateio": info_titulo.get("departamentosRateio") or [{"nome": "-", "percentual": 100}],
+                    "transferenciaInterna": transferencia_interna,
+                    "natureza": natureza,
                 })
 
             resultado.append({
@@ -521,8 +566,8 @@ def gerar_html(contas: list) -> str:
   .saldos, .cards {{
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 10px;
-    padding: 16px 32px 0;
+    gap: 14px;
+    padding: 14px 32px 0;
   }}
 
   .box-saldo {{
@@ -535,12 +580,31 @@ def gerar_html(contas: list) -> str:
   .box-saldo .valor-saldo {{ font-size: 16px; font-weight: 800; margin-top: 4px; color: #f0f9ff; letter-spacing: -0.01em; }}
   .box-saldo .ref {{ font-size: 9.5px; color: var(--text-faint); margin-top: 4px; }}
 
-  .saldo-total-wrap {{ padding: 16px 32px 0; }}
+  .saldo-total-wrap {{ padding: 14px 32px 0; }}
+  .saldo-total-linha {{ display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }}
+  #saldoOntemContainer {{ flex: 0 0 240px; }}
+  #saldoTotalContainer {{ flex: 1; min-width: 260px; }}
+
+  .card-saldo-ontem {{
+    background: linear-gradient(180deg, #0f2942 0%, #0d2338 100%);
+    border: 1px solid #1d4d7a;
+    border-radius: var(--radius-sm);
+    padding: 13px 18px;
+    height: 100%;
+    display: flex; flex-direction: column; justify-content: center;
+  }}
+  .card-saldo-ontem .label {{
+    font-size: 11px; font-weight: 800; color: var(--cyan); text-transform: uppercase; letter-spacing: .05em;
+  }}
+  .card-saldo-ontem .ref {{ font-size: 10px; color: var(--text-faint); margin-top: 3px; }}
+  .card-saldo-ontem .valor-saldo-ontem {{ font-size: 20px; font-weight: 800; color: #f0f9ff; letter-spacing: -0.01em; margin-top: 4px; }}
+
   .card-saldo-total {{
     background: linear-gradient(135deg, #1a2f14 0%, #16321f 60%, #0f2942 100%);
     border: 1px solid #2d6a3e;
     border-radius: var(--radius-sm);
     padding: 13px 18px;
+    height: 100%;
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
   }}
   .card-saldo-total .label {{
@@ -565,8 +629,8 @@ def gerar_html(contas: list) -> str:
   .valor.saldo {{ color: var(--text); font-size: 13.5px; }}
   .card .qtd {{ font-size: 9.5px; color: var(--text-faint); margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }}
 
-  .card-departamento-wrap {{ padding: 0 32px; margin-top: 4px; }}
-  .card-departamento {{ max-width: none; }}
+  .card-departamento-wrap {{ padding: 0 32px; margin-top: 14px; }}
+  .card-departamento {{ max-width: none; padding-top: 0; }}
   .card-departamento .label {{ margin-bottom: 8px; }}
   .linha-depto {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }}
   .linha-depto .nome-depto {{ flex: 0 0 200px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
@@ -641,6 +705,14 @@ def gerar_html(contas: list) -> str:
   </div>
 
   <div class="filtro-bloco">
+    <h3>Tipo</h3>
+    <div class="grupo-check">
+      <label><input type="checkbox" class="chk-tipo" value="Contas a Pagar" checked> Contas a Pagar</label>
+      <label><input type="checkbox" class="chk-tipo" value="Contas a Receber" checked> Contas a Receber</label>
+    </div>
+  </div>
+
+  <div class="filtro-bloco">
     <h3>Período (data de previsão/pagamento)</h3>
     <div class="datas">
       <label>De: <input type="date" id="dataDe" value="2026-01-01"></label>
@@ -669,18 +741,18 @@ def gerar_html(contas: list) -> str:
     </div>
   </div>
 
-  <div class="filtro-bloco">
-    <h3>Situação</h3>
-    <input type="text" id="filtroSituacao" placeholder="Ex: Pago, Agendado, A Vencer..." class="input-texto">
-  </div>
-
   <div class="botoes-filtro">
     <button id="btnAplicar">Aplicar filtros</button>
     <button id="btnRedefinir" type="button">Redefinir filtros</button>
   </div>
 </div>
 
-<div class="saldo-total-wrap" id="saldoTotalContainer"></div>
+<div class="saldo-total-wrap">
+  <div class="saldo-total-linha">
+    <div id="saldoOntemContainer"></div>
+    <div id="saldoTotalContainer"></div>
+  </div>
+</div>
 
 <div class="saldos" id="saldosContainer"></div>
 
@@ -789,6 +861,10 @@ function empresasSelecionadas() {{
   return Array.from(document.querySelectorAll('.chk-empresa:checked')).map(el => el.value);
 }}
 
+function tiposSelecionados() {{
+  return Array.from(document.querySelectorAll('.chk-tipo:checked')).map(el => el.value);
+}}
+
 function aplicarFiltrosColuna(lista) {{
   return lista.filter(l => {{
     return COLUNAS.every(col => {{
@@ -874,7 +950,6 @@ function renderizar() {{
   const conciliDe = document.getElementById('conciliDe').value;
   const conciliAte = document.getElementById('conciliAte').value;
   const textoCliente = document.getElementById('filtroCliente').value.trim().toLowerCase();
-  const textoSituacao = document.getElementById('filtroSituacao').value.trim().toLowerCase();
   const valorMinStr = document.getElementById('valorMin').value;
   const valorMaxStr = document.getElementById('valorMax').value;
   const valorMin = valorMinStr === '' ? null : parseFloat(valorMinStr);
@@ -896,10 +971,18 @@ function renderizar() {{
   // Excel na própria coluna "Banco/Cartão" da tabela).
   let todosLancamentos = [];
   const empresasChecadas = empresasSelecionadas();
+  const tiposChecados = tiposSelecionados();
   DADOS.forEach(conta => {{
     if (!empresasChecadas.includes(conta.empresa)) return;
 
     const baseFiltrados = conta.lancamentos.filter(l => {{
+      // Transferências entre contas do próprio grupo (Itaú >> Sicoob, etc.)
+      // não são entrada/saída real de dinheiro — ficam de fora da tabela e
+      // dos cards. O saldo real da conta (calcularSaldoNaData) NÃO usa esse
+      // filtro, então continua contando essas transferências normalmente.
+      if (l.transferenciaInterna) return false;
+      if (l.natureza !== '-' && !tiposChecados.includes(l.natureza)) return false;
+
       const dataISO = paraDataISO(l.data);
       if (dataDe && dataISO && dataISO < dataDe) return false;
       if (dataAte && dataISO && dataISO > dataAte) return false;
@@ -912,7 +995,6 @@ function renderizar() {{
       }}
 
       if (textoCliente && !(l.cliente || '').toLowerCase().includes(textoCliente)) return false;
-      if (textoSituacao && !(l.situacaoTitulo || '').toLowerCase().includes(textoSituacao)) return false;
 
       if (valorMin !== null && l.valor < valorMin) return false;
       if (valorMax !== null && l.valor > valorMax) return false;
@@ -936,12 +1018,24 @@ function renderizar() {{
   const filtrados = aplicarFiltrosColuna(todosLancamentos);
 
   // --- Card único de distribuição por Departamento (% sobre o valor absoluto total filtrado) ---
+  // Lançamentos rateados entre mais de um departamento (ex: "Comercial 42%;
+  // Administrativo 58%") entram AQUI já divididos proporcionalmente entre
+  // cada departamento individual — assim "Comercial" de um lançamento
+  // rateado soma com "Comercial" de outro lançamento 100% Comercial, em vez
+  // de virar uma categoria à parte por combinação.
   const cardDepto = document.getElementById('cardDepartamentoContainer');
   const totalAbsDepto = filtrados.reduce((s, l) => s + Math.abs(l.valor), 0);
   const somaPorDepto = {{}};
   filtrados.forEach(l => {{
-    const chave = l.departamento || '-';
-    somaPorDepto[chave] = (somaPorDepto[chave] || 0) + Math.abs(l.valor);
+    const valorAbs = Math.abs(l.valor);
+    const rateio = (l.departamentosRateio && l.departamentosRateio.length)
+      ? l.departamentosRateio
+      : [{{ nome: l.departamento || '-', percentual: 100 }}];
+    rateio.forEach(d => {{
+      const chave = d.nome || '-';
+      const valorParte = valorAbs * (d.percentual || 0) / 100;
+      somaPorDepto[chave] = (somaPorDepto[chave] || 0) + valorParte;
+    }});
   }});
   const linhasDepto = Object.entries(somaPorDepto)
     .sort((a, b) => b[1] - a[1])
@@ -1018,6 +1112,29 @@ function renderizar() {{
         <div class="ref">${{rotuloSaldoTotal}}</div>
       </div>
       <div class="valor-saldo-total">${{fmtMoeda(saldoTotalBancos)}}</div>
+    </div>
+  `;
+
+  // Saldo de Ontem: sempre o dia anterior ao dia real de HOJE (não ao filtro
+  // "Até" selecionado) — serve de referência fixa para comparar com o Saldo
+  // Total acima, que já segue o período filtrado. Usa o mesmo conjunto de
+  // contas bancárias visíveis no momento, pra ser uma comparação justa.
+  const saldoOntemContainer = document.getElementById('saldoOntemContainer');
+  const hojeReal = new Date();
+  hojeReal.setDate(hojeReal.getDate() - 1);
+  const ontemISO = hojeReal.toISOString().split('T')[0];
+  let saldoTotalBancosOntem = 0;
+  contasPresentes.forEach(nomeConta => {{
+    const dadosConta = DADOS.find(c => c.nome === nomeConta);
+    if (dadosConta && dadosConta.tipo === 'banco') {{
+      saldoTotalBancosOntem += calcularSaldoNaData(dadosConta, ontemISO);
+    }}
+  }});
+  saldoOntemContainer.innerHTML = `
+    <div class="card-saldo-ontem">
+      <div class="label">Saldo do Dia Anterior</div>
+      <div class="ref">${{fmtDataBR(ontemISO)}} — mesmas contas visíveis</div>
+      <div class="valor-saldo-ontem">${{fmtMoeda(saldoTotalBancosOntem)}}</div>
     </div>
   `;
 
@@ -1212,8 +1329,8 @@ function redefinirFiltros() {{
   document.getElementById('filtroCliente').value = '';
   document.getElementById('valorMin').value = '';
   document.getElementById('valorMax').value = '';
-  document.getElementById('filtroSituacao').value = '';
   document.querySelectorAll('.chk-empresa').forEach(chk => chk.checked = true);
+  document.querySelectorAll('.chk-tipo').forEach(chk => chk.checked = true);
 
   // Estado interno: filtro estilo Excel por coluna, larguras e ordenação.
   colFiltros = {{}};
