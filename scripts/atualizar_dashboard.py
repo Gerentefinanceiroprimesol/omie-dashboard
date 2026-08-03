@@ -30,7 +30,7 @@ HEADERS = {"Content-Type": "application/json"}
 
 # Período de busca: sempre de 01/01/2026 até o dia da execução
 PERIODO_INICIAL = "01/01/2026"
-PERIODO_FINAL = datetime.now().strftime("%d/%m/%Y")
+PERIODO_FINAL = (datetime.now() + timedelta(days=365)).strftime("%d/%m/%Y")
 
 # Logo da Prime Sol (ícone, fundo transparente), embutida como base64 para
 # o arquivo continuar sendo um único script — sem depender de outro arquivo
@@ -236,10 +236,12 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict) -> dict
                     desc_depto = "; ".join(partes)
 
                 observacao_titulo = (detalhes.get("observacao") or "").strip()
+                status_titulo = (detalhes.get("cStatus") or "").strip()
 
                 lookup[cod_mov] = {
                     "departamento": desc_depto,
                     "observacao": observacao_titulo,
+                    "status": status_titulo,
                 }
 
             total_paginas = data.get("nTotPaginas", 1)
@@ -285,6 +287,7 @@ def coletar_dados() -> list:
                 "cliente": m.get("cDesCliente", "-") or "-",
                 "valor": m.get("nValorDocumento", 0),
                 "situacao": m.get("cSituacao", "-") or "-",
+                "situacaoTitulo": info_titulo.get("status") or "-",
                 "dataConciliacao": (m.get("dDataConciliacao") or "").strip(),
                 "saldo": m.get("nSaldo", 0),
                 "categoria": m.get("cDesCategoria", "-") or "-",
@@ -443,7 +446,9 @@ def gerar_html(contas: list) -> str:
   table {{ table-layout: fixed; border-collapse: collapse; margin-bottom: 8px; font-size: 12.5px; background: var(--bg-panel); }}
   th, td {{ text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
   th {{ position: relative; color: var(--text-muted); font-weight: 600; white-space: nowrap; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }}
-  th .th-label {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  th .th-ordenavel {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; padding: 2px 4px; border-radius: 4px; }}
+  th .th-ordenavel:hover {{ background: var(--border); color: var(--text); }}
+  th .th-ordenavel.ativo {{ color: var(--laranja); }}
   tr:last-child td {{ border-bottom: none; }}
   tr.linha-total td {{ font-weight: 700; color: var(--text); background: var(--bg-panel); border-top: 2px solid var(--border); border-bottom: none; }}
   tr.linha-total .valor-total {{ color: var(--cyan); }}
@@ -495,15 +500,6 @@ def gerar_html(contas: list) -> str:
   </div>
 
   <div class="filtro-bloco">
-    <h3>Conciliação</h3>
-    <div class="radios">
-      <label><input type="radio" name="conciliacao" value="todos"> Todos</label>
-      <label><input type="radio" name="conciliacao" value="conciliados" checked> Apenas conciliados</label>
-      <label><input type="radio" name="conciliacao" value="nao_conciliados"> Apenas não conciliados</label>
-    </div>
-  </div>
-
-  <div class="filtro-bloco">
     <h3>Data de Conciliação</h3>
     <div class="datas">
       <label>De: <input type="date" id="conciliDe"></label>
@@ -526,7 +522,7 @@ def gerar_html(contas: list) -> str:
 
   <div class="filtro-bloco">
     <h3>Situação</h3>
-    <input type="text" id="filtroSituacao" placeholder="Ex: Conciliado, Pago..." class="input-texto">
+    <input type="text" id="filtroSituacao" placeholder="Ex: Pago, Agendado, A Vencer..." class="input-texto">
   </div>
 
   <button id="btnAplicar">Aplicar filtros</button>
@@ -548,6 +544,7 @@ const DADOS = {dados_json};
 // Definição das colunas da tabela, usadas tanto para montar o cabeçalho
 // quanto para o filtro estilo Excel de cada coluna.
 const COLUNAS = [
+  {{ key: 'situacaoTitulo', label: 'Situação', get: l => l.situacaoTitulo }},
   {{ key: 'data', label: 'Data Pagamento/Recebimento', get: l => l.data }},
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente }},
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
@@ -555,7 +552,6 @@ const COLUNAS = [
   {{ key: 'departamento', label: 'Departamento', get: l => l.departamento }},
   {{ key: 'conta', label: 'Banco/Cartão', get: l => l.contaNome }},
   {{ key: 'observacao', label: 'Observação', get: l => l.observacao }},
-  {{ key: 'situacao', label: 'Situação', get: l => l.situacao }},
   {{ key: 'dataConciliacao', label: 'Data Conciliação', get: l => l.dataConciliacao || '-' }},
 ];
 
@@ -570,10 +566,32 @@ let baseFiltradosGlobal = [];
 // Chave "coluna" -> largura em px. Sem entrada = usa o padrão abaixo.
 let colWidths = {{}};
 const LARGURA_PADRAO = {{
-  conta: 150, data: 150, cliente: 200, valor: 110, categoria: 160,
-  observacao: 240, situacao: 120, dataConciliacao: 150,
+  situacaoTitulo: 130, conta: 150, data: 150, cliente: 200, valor: 110, categoria: 160,
+  observacao: 240, dataConciliacao: 150,
 }};
 let resizando = null;
+
+// Estado de ordenação da tabela: null = ordem natural (como veio da Omie).
+let ordenacao = {{ coluna: null, direcao: null }};
+
+/** Extrai o valor "comparável" de um lançamento para uma coluna, usado na
+ * ordenação — números continuam números, datas viram AAAA-MM-DD (ordena
+ * cronologicamente certo), e texto vira minúsculo (ordena A-Z ignorando
+ * maiúscula/minúscula). */
+function valorOrdenacao(l, colKey) {{
+  switch (colKey) {{
+    case 'valor': return l.valor;
+    case 'data': return paraDataISO(l.data) || '';
+    case 'dataConciliacao': return paraDataISO(l.dataConciliacao) || '';
+    case 'cliente': return (l.cliente || '').toLowerCase();
+    case 'categoria': return (l.categoria || '').toLowerCase();
+    case 'departamento': return (l.departamento || '').toLowerCase();
+    case 'conta': return (l.contaNome || '').toLowerCase();
+    case 'observacao': return (l.observacao || '').toLowerCase();
+    case 'situacaoTitulo': return (l.situacaoTitulo || '').toLowerCase();
+    default: return '';
+  }}
+}}
 
 function paraDataISO(brDate) {{
   if (!brDate) return null;
@@ -693,7 +711,6 @@ function abrirDropdownColuna(col, btnEl) {{
 function renderizar() {{
   const dataDe = document.getElementById('dataDe').value;
   const dataAte = document.getElementById('dataAte').value;
-  const modoConciliacao = document.querySelector('input[name="conciliacao"]:checked').value;
   const conciliDe = document.getElementById('conciliDe').value;
   const conciliAte = document.getElementById('conciliAte').value;
   const textoCliente = document.getElementById('filtroCliente').value.trim().toLowerCase();
@@ -724,9 +741,6 @@ function renderizar() {{
       if (dataDe && dataISO && dataISO < dataDe) return false;
       if (dataAte && dataISO && dataISO > dataAte) return false;
 
-      if (modoConciliacao === 'conciliados' && !l.dataConciliacao) return false;
-      if (modoConciliacao === 'nao_conciliados' && l.dataConciliacao) return false;
-
       if (conciliDe || conciliAte) {{
         const conciliISO = paraDataISO(l.dataConciliacao);
         if (!conciliISO) return false;
@@ -735,7 +749,7 @@ function renderizar() {{
       }}
 
       if (textoCliente && !(l.cliente || '').toLowerCase().includes(textoCliente)) return false;
-      if (textoSituacao && !(l.situacao || '').toLowerCase().includes(textoSituacao)) return false;
+      if (textoSituacao && !(l.situacaoTitulo || '').toLowerCase().includes(textoSituacao)) return false;
 
       if (valorMin !== null && l.valor < valorMin) return false;
       if (valorMax !== null && l.valor > valorMax) return false;
@@ -816,6 +830,20 @@ function renderizar() {{
     cardsContainer.appendChild(card);
   }});
 
+  // Ordenação (se o usuário clicou em algum cabeçalho de coluna) — feita
+  // sobre TODOS os filtrados, antes de cortar para a amostra de 100, para
+  // que o corte reflita de verdade os maiores/menores ou A-Z/Z-A.
+  if (ordenacao.coluna) {{
+    filtrados.sort((a, b) => {{
+      const va = valorOrdenacao(a, ordenacao.coluna);
+      const vb = valorOrdenacao(b, ordenacao.coluna);
+      const cmp = (typeof va === 'number' && typeof vb === 'number')
+        ? va - vb
+        : String(va).localeCompare(String(vb), 'pt-BR');
+      return ordenacao.direcao === 'desc' ? -cmp : cmp;
+    }});
+  }}
+
   const amostra = filtrados.slice(0, 100);
 
   const totalFiltrado = filtrados.reduce((s, l) => s + l.valor, 0);
@@ -829,6 +857,7 @@ function renderizar() {{
 
   const linhasHtml = amostra.map(l => `
     <tr>
+      <td>${{l.situacaoTitulo}}</td>
       <td>${{l.data}}</td>
       <td>${{l.cliente}}</td>
       <td>${{fmtMoeda(l.valor)}}</td>
@@ -836,7 +865,6 @@ function renderizar() {{
       <td>${{l.departamento}}</td>
       <td>${{l.contaNome}}</td>
       <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
-      <td>${{l.situacao}}</td>
       <td>${{l.dataConciliacao || '-'}}</td>
     </tr>
   `).join('');
@@ -844,8 +872,11 @@ function renderizar() {{
   const headerHtml = COLUNAS.map(col => {{
     const ativo = colFiltros[col.key] ? 'ativo' : '';
     const largura = colWidths[col.key] || LARGURA_PADRAO[col.key] || 150;
+    const ordenandoEsta = ordenacao.coluna === col.key;
+    const seta = ordenandoEsta ? (ordenacao.direcao === 'asc' ? ' ▲' : ' ▼') : '';
+    const classeOrdenacao = ordenandoEsta ? 'th-ordenavel ativo' : 'th-ordenavel';
     return `<th style="width:${{largura}}px">
-      <span class="th-label">${{col.label}}</span>
+      <span class="${{classeOrdenacao}}" data-col="${{col.key}}" title="Clique para ordenar">${{col.label}}${{seta}}</span>
       <button type="button" class="btn-filtro-col ${{ativo}}" data-col="${{col.key}}">▾</button>
       <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="-20" title="Diminuir largura">−</button>
       <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="20" title="Aumentar largura">+</button>
@@ -905,6 +936,20 @@ function renderizar() {{
 
 // Delegação de clique para os botões de filtro de coluna (eles são recriados a cada renderização).
 document.getElementById('secoesContainer').addEventListener('click', (e) => {{
+  const thOrdenavel = e.target.closest('.th-ordenavel');
+  if (thOrdenavel) {{
+    const colKey = thOrdenavel.dataset.col;
+    if (ordenacao.coluna !== colKey) {{
+      ordenacao = {{ coluna: colKey, direcao: 'asc' }};
+    }} else if (ordenacao.direcao === 'asc') {{
+      ordenacao = {{ coluna: colKey, direcao: 'desc' }};
+    }} else {{
+      ordenacao = {{ coluna: null, direcao: null }};
+    }}
+    renderizar();
+    return;
+  }}
+
   const btnLargura = e.target.closest('.btn-largura');
   if (btnLargura) {{
     const colKey = btnLargura.dataset.col;
