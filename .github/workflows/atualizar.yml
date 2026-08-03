@@ -1,5 +1,4 @@
 name: Atualizar dashboard Omie
-
 on:
   schedule:
     # Horários em UTC. Campos dos Goytacazes está em UTC-3.
@@ -7,38 +6,37 @@ on:
     - cron: "0 15 * * *"
     - cron: "0 23 * * *"
   workflow_dispatch: {}   # permite rodar manualmente pelo botão "Run workflow"
-
 permissions:
   contents: write
   pages: write
   id-token: write
-
 jobs:
   atualizar:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
-
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Instalar dependências
         run: pip install requests
-
       - name: Rodar script de atualização
         env:
           OMIE_APP_KEY: ${{ secrets.OMIE_APP_KEY }}
           OMIE_APP_SECRET: ${{ secrets.OMIE_APP_SECRET }}
+          OMIE_APP_KEY_LAGOS: ${{ secrets.OMIE_APP_KEY_LAGOS }}
+          OMIE_APP_SECRET_LAGOS: ${{ secrets.OMIE_APP_SECRET_LAGOS }}
+          OMIE_APP_KEY_CABO_FRIO: ${{ secrets.OMIE_APP_KEY_CABO_FRIO }}
+          OMIE_APP_SECRET_CABO_FRIO: ${{ secrets.OMIE_APP_SECRET_CABO_FRIO }}
+          OMIE_APP_KEY_PS_ENERGIA: ${{ secrets.OMIE_APP_KEY_PS_ENERGIA }}
+          OMIE_APP_SECRET_PS_ENERGIA: ${{ secrets.OMIE_APP_SECRET_PS_ENERGIA }}
         run: python scripts/atualizar_dashboard.py
-
       - name: Publicar artefato do Pages
         uses: actions/upload-pages-artifact@v3
         with:
           path: public
-
   publicar:
     needs: atualizar
     runs-on: ubuntu-latest
