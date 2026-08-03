@@ -22,6 +22,9 @@ import time
 from datetime import datetime, timezone, timedelta
 import requests
 
+from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG
+from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela
+
 def _credenciais(env_key: str, env_secret: str):
     """Lê um par de credenciais do ambiente. Se não estiverem configuradas
     (ainda não criamos os Secrets no GitHub para aquela empresa), retorna
@@ -427,6 +430,26 @@ def coletar_dados() -> list:
                 # caso usamos o dDtPrevisao do ListarMovimentos, que é a
                 # mesma data que gera o status.
                 status_titulo = info_titulo.get("status") or "-"
+                data_conciliacao_titulo = (m.get("dDataConciliacao") or "").strip()
+                # Cartão de crédito nunca tem título/status real (pulamos de
+                # propósito a busca no ListarMovimentos pra cartão, já que a
+                # Omie sempre retorna erro 500 nesse endpoint pra esse tipo
+                # de conta). Assumimos "PAGO" para esses lançamentos, já que
+                # um gasto que aparece na fatura já é um gasto efetivado —
+                # não existe "a vencer"/"previsto" pra cartão como existe
+                # pra título bancário.
+                if conta["tipo"] == "cartao":
+                    status_titulo = "PAGO"
+                elif status_titulo == "-" and data_conciliacao_titulo:
+                    # Tarifas, taxas e débitos/créditos diretos (ex: "Tarifas
+                    # e Serviços Bancários") não passam pelo módulo de
+                    # Contas a Pagar/Receber da Omie, então nunca têm título
+                    # e o cruzamento por ListarMovimentos nunca vai achar
+                    # nada pra eles. Se o lançamento já está conciliado
+                    # (Data de Conciliação preenchida), já é um lançamento
+                    # real e liquidado — assumimos PAGO (saída) ou RECEBIDO
+                    # (entrada) com base na natureza, em vez de deixar "-".
+                    status_titulo = "RECEBIDO" if natureza_raw == "R" else "PAGO"
                 data_prevista_titulo = info_titulo.get("dataPrevisao") or ""
                 data_extrato = m.get("dDataLancamento", "")
                 if status_titulo not in ("PAGO", "RECEBIDO") and data_prevista_titulo:
@@ -440,7 +463,7 @@ def coletar_dados() -> list:
                     "valor": m.get("nValorDocumento", 0),
                     "situacao": m.get("cSituacao", "-") or "-",
                     "situacaoTitulo": status_titulo,
-                    "dataConciliacao": (m.get("dDataConciliacao") or "").strip(),
+                    "dataConciliacao": data_conciliacao_titulo,
                     "saldo": m.get("nSaldo", 0),
                     "categoria": categoria_final,
                     "observacao": observacao_final,
@@ -462,9 +485,105 @@ def coletar_dados() -> list:
     return resultado
 
 
+def formatar_percentual(p):
+    if p is None:
+        return '-'
+    cor = 'style="color:#ff6b6b"' if p < 0 else ''
+    return f'<span {cor}>{p:.1f}%</span>'
+
+
+def formatar_valor_dre_dfc(v):
+    if v is None:
+        return '<span class="dre-pendente">preencher</span>'
+    if v == 0:
+        return '-'
+    cor = 'style="color:#ff6b6b"' if v < 0 else ''
+    valor_fmt = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    sinal = "-" if v < 0 else ""
+    return f'<span {cor}>{sinal}R$ {valor_fmt}</span>'
+
+
+def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancamentos: list,
+                                meses_dinamicos: list, manual_faturamento: dict,
+                                manual_folha: dict, manual_weg: dict, linha_base_pct: int) -> str:
+    linhas = montar_linhas_tabela(
+        linhas_config, todos_lancamentos, meses_dinamicos,
+        manual_faturamento, manual_folha, manual_weg,
+    )
+    nomes_meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun'] + [
+        f"{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m-1]}/{a}"
+        for (a, m) in meses_dinamicos
+    ]
+
+    # valores da linha-base (Receita Bruta no DRE, Recebimento Operacional no
+    # DFC) mes a mes, usados como denominador do "% AV" (Análise Vertical) --
+    # igual a planilha original, que tinha uma coluna de % ao lado de cada mês.
+    valores_base = next((l["valores"] for l in linhas if l["linha"] == linha_base_pct), None)
+
+    def av_percent(valor, idx):
+        if not valores_base or valor is None:
+            return None
+        base = valores_base[idx]
+        if not base:
+            return None
+        return valor / base * 100
+
+    cabecalho = "".join(f"<th>{m}</th><th class=\"dre-col-pct\">%</th>" for m in nomes_meses)
+    linhas_html = []
+    for l in linhas:
+        classe = "dre-subtotal" if l["subtotal"] else ""
+        atributo_dentro = f' data-dentro="{" ".join(str(s) for s in l["secoes_pai"])}"' if l["secoes_pai"] else ""
+        atributo_secao = f' data-secao="{l["linha"]}" onclick="toggleSecaoDreDfc(this)"' if l["eh_secao"] else ""
+        marcador = '<span class="dre-toggle">▾</span> ' if l["eh_secao"] else ""
+        celulas = "".join(
+            f"<td>{formatar_valor_dre_dfc(v)}</td>"
+            f'<td class="dre-col-pct">{formatar_percentual(av_percent(v, i))}</td>'
+            for i, v in enumerate(l["valores"])
+        )
+        linhas_html.append(
+            f'<tr class="{classe}"{atributo_dentro}{atributo_secao}>'
+            f'<td class="dre-label">{marcador}{l["label"]}</td>{celulas}</tr>'
+        )
+
+    return f"""
+    <div class="dre-dfc-wrap">
+      <h2>{titulo}</h2>
+      <div class="scroll-topo-wrap dre-scroll-topo"><div class="scroll-topo-inner"></div></div>
+      <div class="dre-dfc-scroll">
+        <table class="dre-dfc-tabela">
+          <thead><tr><th>Categoria</th>{cabecalho}</tr></thead>
+          <tbody>{''.join(linhas_html)}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+
 def gerar_html(contas: list) -> str:
     agora = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     dados_json = jsonlib.dumps(contas, ensure_ascii=False)
+
+    # --- DRE / DFC: consolida todos os lançamentos de todas as contas (não
+    # segue os filtros da aba "Lançamentos" -- é sempre a visão completa do
+    # grupo Prime Sol, igual a planilha original) e calcula os meses a
+    # partir de Julho/2026. Limitado até Dezembro/2026 por enquanto -- a
+    # partir de Janeiro/2027 crescemos pra outra aba quando fizer sentido.
+    todos_lancamentos_grupo = [l for c in contas for l in c["lancamentos"]]
+    meses_dinamicos = calcular_meses_dinamicos(todos_lancamentos_grupo, 2026, 12)
+
+    # No DFC, tudo depois de "Posição de Caixa Acumulada" (linha 190) é só
+    # conferência interna (Saldo inicial, Entrada/Saída/Líquido de Extratos,
+    # Check) -- não faz parte do relatório em si, então não exibimos.
+    dfc_linhas_visiveis = [x for x in DFC_LINHAS if x["linha"] <= 190]
+
+    html_dfc = montar_tabela_dre_dfc_html(
+        "Demonstrativo de Fluxo de Caixa (DFC)", dfc_linhas_visiveis, todos_lancamentos_grupo,
+        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 8,
+    )
+    html_dre = montar_tabela_dre_dfc_html(
+        "Demonstração do Resultado do Exercício (DRE)", DRE_LINHAS, todos_lancamentos_grupo,
+        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 6,
+    )
 
     empresas_unicas = list(dict.fromkeys(c["empresa"] for c in contas))
     checkboxes_empresa_html = "".join(
@@ -579,6 +698,40 @@ def gerar_html(contas: list) -> str:
   .box-saldo .label {{ font-size: 9.5px; font-weight: 700; color: var(--cyan); text-transform: uppercase; letter-spacing: .04em; }}
   .box-saldo .valor-saldo {{ font-size: 16px; font-weight: 800; margin-top: 4px; color: #f0f9ff; letter-spacing: -0.01em; }}
   .box-saldo .ref {{ font-size: 9.5px; color: var(--text-faint); margin-top: 4px; }}
+
+  .abas-nav {{
+    display: flex; gap: 4px; padding: 0 32px; border-bottom: 1px solid var(--border);
+  }}
+  .aba-btn {{
+    background: none; border: none; color: var(--text-faint); font-size: 13px; font-weight: 700;
+    padding: 10px 18px; cursor: pointer; border-bottom: 2px solid transparent;
+  }}
+  .aba-btn:hover {{ color: var(--text); }}
+  .aba-ativa {{ color: var(--accent) !important; border-bottom: 2px solid var(--accent) !important; }}
+
+  .dre-dfc-wrap {{ padding: 20px 32px 40px; }}
+  .dre-dfc-wrap h2 {{ font-size: 16px; margin-bottom: 14px; }}
+  .dre-dfc-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }}
+  .dre-dfc-tabela {{
+    border-collapse: collapse; width: auto; min-width: 100%; font-size: 12px;
+    white-space: nowrap; table-layout: auto;
+  }}
+  .dre-dfc-tabela th {{
+    background: var(--bg-header); text-align: right; padding: 8px 10px; font-size: 10.5px;
+    text-transform: uppercase; color: var(--text-faint); position: sticky; top: 0;
+  }}
+  .dre-dfc-tabela th:first-child {{ text-align: left; position: sticky; left: 0; z-index: 2; }}
+  .dre-dfc-tabela td {{ padding: 6px 10px; text-align: right; border-top: 1px solid var(--border); }}
+  .dre-dfc-tabela td.dre-label {{
+    text-align: left; position: sticky; left: 0; background: var(--bg-card); z-index: 1;
+  }}
+  .dre-dfc-tabela tr.dre-subtotal {{ font-weight: 800; background: rgba(54,91,221,0.08); }}
+  .dre-dfc-tabela tr.dre-subtotal td.dre-label {{ background: #16223f; }}
+  .dre-toggle {{ display: inline-block; width: 12px; cursor: pointer; user-select: none; }}
+  .dre-dfc-tabela tr[data-secao] td.dre-label {{ cursor: pointer; }}
+  .dre-dfc-tabela tr.dre-colapsada {{ display: none; }}
+  .dre-col-pct {{ font-size: 10.5px; color: var(--text-faint); min-width: 50px; }}
+  .dre-pendente {{ color: var(--cyan); font-style: italic; font-size: 10.5px; }}
 
   .saldo-total-wrap {{ padding: 14px 32px 0; }}
   .saldo-total-linha {{ display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }}
@@ -696,6 +849,13 @@ def gerar_html(contas: list) -> str:
   <div class="atualizado">Última atualização: {agora} · Dados brutos coletados de {PERIODO_INICIAL} até {PERIODO_FINAL}</div>
 </header>
 
+<div class="abas-nav">
+  <button class="aba-btn aba-ativa" data-aba="Lancamentos" onclick="mostrarAba('Lancamentos')">Lançamentos</button>
+  <button class="aba-btn" data-aba="DFC" onclick="mostrarAba('DFC')">DFC</button>
+  <button class="aba-btn" data-aba="DRE" onclick="mostrarAba('DRE')">DRE</button>
+</div>
+
+<div id="abaLancamentos">
 <div class="filtros">
   <div class="filtro-bloco">
     <h3>Empresas</h3>
@@ -1344,6 +1504,58 @@ function redefinirFiltros() {{
 document.getElementById('btnAplicar').addEventListener('click', renderizar);
 document.getElementById('btnRedefinir').addEventListener('click', redefinirFiltros);
 renderizar();
+</script>
+</div>
+
+<div id="abaDFC" style="display:none">{html_dfc}</div>
+<div id="abaDRE" style="display:none">{html_dre}</div>
+
+<script>
+function mostrarAba(nome) {{
+  document.getElementById('abaLancamentos').style.display = (nome === 'Lancamentos') ? '' : 'none';
+  document.getElementById('abaDFC').style.display = (nome === 'DFC') ? '' : 'none';
+  document.getElementById('abaDRE').style.display = (nome === 'DRE') ? '' : 'none';
+  document.querySelectorAll('.aba-btn').forEach(btn => {{
+    btn.classList.toggle('aba-ativa', btn.dataset.aba === nome);
+  }});
+}}
+
+function toggleSecaoDreDfc(trSecao) {{
+  const linha = trSecao.dataset.secao;
+  const tabela = trSecao.closest('table');
+  const filhos = Array.from(tabela.querySelectorAll('tr[data-dentro]')).filter(tr =>
+    tr.dataset.dentro.split(' ').includes(linha)
+  );
+  if (!filhos.length) return;
+  const jaColapsado = filhos[0].classList.contains('dre-colapsada');
+  filhos.forEach(tr => tr.classList.toggle('dre-colapsada', !jaColapsado));
+  const marcador = trSecao.querySelector('.dre-toggle');
+  if (marcador) marcador.textContent = jaColapsado ? '▾' : '▸';
+}}
+
+// Barra de rolagem duplicada (em cima e embaixo) nas tabelas de DRE/DFC,
+// igual já fazíamos na tabela de Lançamentos.
+document.querySelectorAll('.dre-dfc-wrap').forEach(wrap => {{
+  const scrollBaixo = wrap.querySelector('.dre-dfc-scroll');
+  const scrollTopoWrap = wrap.querySelector('.dre-scroll-topo');
+  const scrollTopoInner = scrollTopoWrap.querySelector('.scroll-topo-inner');
+  const tabela = scrollBaixo.querySelector('table');
+  scrollTopoInner.style.width = tabela.scrollWidth + 'px';
+
+  let sincronizando = false;
+  scrollTopoWrap.addEventListener('scroll', () => {{
+    if (sincronizando) return;
+    sincronizando = true;
+    scrollBaixo.scrollLeft = scrollTopoWrap.scrollLeft;
+    sincronizando = false;
+  }});
+  scrollBaixo.addEventListener('scroll', () => {{
+    if (sincronizando) return;
+    sincronizando = true;
+    scrollTopoWrap.scrollLeft = scrollBaixo.scrollLeft;
+    sincronizando = false;
+  }});
+}});
 </script>
 
 </body>
