@@ -1518,6 +1518,12 @@ function mostrarAba(nome) {{
   document.querySelectorAll('.aba-btn').forEach(btn => {{
     btn.classList.toggle('aba-ativa', btn.dataset.aba === nome);
   }});
+  // A largura da barra de cima só dá pra medir certo com a aba já visível
+  // (enquanto está com display:none, o navegador mede tudo como 0) -- por
+  // isso recalculamos aqui, toda vez que troca de aba.
+  if (nome === 'DFC' || nome === 'DRE') {{
+    atualizarLarguraScrollDreDfc();
+  }}
 }}
 
 function toggleSecaoDreDfc(trSecao) {{
@@ -1534,13 +1540,21 @@ function toggleSecaoDreDfc(trSecao) {{
 }}
 
 // Barra de rolagem duplicada (em cima e embaixo) nas tabelas de DRE/DFC,
-// igual já fazíamos na tabela de Lançamentos.
+// igual já fazíamos na tabela de Lançamentos. A sincronização de scroll é
+// ligada uma vez só; a largura é recalculada toda vez que a aba abre (ver
+// mostrarAba acima).
+function atualizarLarguraScrollDreDfc() {{
+  document.querySelectorAll('.dre-dfc-wrap').forEach(wrap => {{
+    const scrollBaixo = wrap.querySelector('.dre-dfc-scroll');
+    const scrollTopoInner = wrap.querySelector('.dre-scroll-topo .scroll-topo-inner');
+    const tabela = scrollBaixo.querySelector('table');
+    scrollTopoInner.style.width = tabela.scrollWidth + 'px';
+  }});
+}}
+
 document.querySelectorAll('.dre-dfc-wrap').forEach(wrap => {{
   const scrollBaixo = wrap.querySelector('.dre-dfc-scroll');
   const scrollTopoWrap = wrap.querySelector('.dre-scroll-topo');
-  const scrollTopoInner = scrollTopoWrap.querySelector('.scroll-topo-inner');
-  const tabela = scrollBaixo.querySelector('table');
-  scrollTopoInner.style.width = tabela.scrollWidth + 'px';
 
   let sincronizando = false;
   scrollTopoWrap.addEventListener('scroll', () => {{
