@@ -38,6 +38,9 @@ HEADERS = {"Content-Type": "application/json"}
 # Período de busca: sempre de 01/01/2026 até 1 ano a partir do dia da execução
 PERIODO_INICIAL = "01/01/2026"
 PERIODO_FINAL = (datetime.now() + timedelta(days=365)).strftime("%d/%m/%Y")
+# Mesma data, em formato ISO (yyyy-mm-dd), usada como valor padrão do campo
+# de data "Até" no HTML/JS (inputs type="date" exigem esse formato).
+PERIODO_FINAL_ISO = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
 
 # Logo da Prime Sol (ícone, fundo transparente), embutida como base64 para
 # o arquivo continuar sendo um único script — sem depender de outro arquivo
@@ -241,10 +244,17 @@ def buscar_departamentos_cadastro(app_key: str, app_secret: str) -> dict:
 def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key: str, app_secret: str) -> dict:
     """Busca os Movimentos Financeiros de uma conta (mês a mês, para evitar
     o limite de registros por chamada), pedindo a distribuição por
-    departamento. Monta {nCodMovCC: {"departamento": ..., "observacao": ...}}.
+    departamento. Monta {codigo_lancamento: {"departamento": ..., "observacao": ..., "status": ...}}.
 
-    nCodMovCC é o mesmo código que aparece no extrato bancário como
-    nCodLancamento — essa é a ponte confirmada entre os dois endpoints.
+    O código usado como chave do lookup depende se o título já foi pago:
+    - Título JÁ PAGO: existe um movimento bancário real, e a Omie expõe o
+      código dele em nCodMovCC — que é o mesmo código que aparece no
+      extrato como nCodLancamento (ponte confirmada via teste real).
+    - Título ainda NÃO PAGO (Previsto/A Vencer): não existe movimento
+      bancário real ainda, então nCodMovCC nem vem na resposta. Nesse
+      caso, a Omie usa o próprio nCodTitulo como se fosse o nCodLancamento
+      na linha de previsão do extrato — então cruzamos por nCodTitulo
+      (confirmado testando o título da SOLARMARKET, previsão 10/08/2026).
 
     A "observacao" aqui é a observação real do TÍTULO (Contas a Pagar/
     Receber) — diferente da observação do extrato bancário, que às vezes
@@ -285,7 +295,15 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
             movimentos = data.get("movimentos", []) or []
             for mov in movimentos:
                 detalhes = mov.get("detalhes", {}) or {}
-                cod_mov = detalhes.get("nCodMovCC")
+                # Títulos já PAGOS geram um movimento bancário de verdade, e a
+                # Omie expõe o código dele em nCodMovCC (que é o que bate com
+                # nCodLancamento no extrato). Títulos ainda não pagos (Previsto/
+                # A Vencer) não têm movimento bancário real ainda, então esse
+                # campo nem vem na resposta — nesse caso, a Omie usa o próprio
+                # nCodTitulo como "nCodLancamento" na linha de previsão do
+                # extrato, então é por ele que cruzamos (confirmado testando a
+                # SOLARMARKET, com previsão em 10/08/2026).
+                cod_mov = detalhes.get("nCodMovCC") or detalhes.get("nCodTitulo")
                 if not cod_mov:
                     continue
 
@@ -626,7 +644,7 @@ def gerar_html(contas: list) -> str:
     <h3>Período (data de previsão/pagamento)</h3>
     <div class="datas">
       <label>De: <input type="date" id="dataDe" value="2026-01-01"></label>
-      <label>Até: <input type="date" id="dataAte"></label>
+      <label>Até: <input type="date" id="dataAte" value="{PERIODO_FINAL_ISO}"></label>
     </div>
   </div>
 
@@ -1181,13 +1199,14 @@ window.addEventListener('blur', () => {{
   document.body.style.cursor = '';
 }});
 
-// Data "até" default = hoje
-document.getElementById('dataAte').value = new Date().toISOString().split('T')[0];
+// Data "até" default = fim do período buscado (1 ano à frente), para já
+// mostrar também lançamentos futuros/agendados desde a abertura da página.
+document.getElementById('dataAte').value = '{PERIODO_FINAL_ISO}';
 
 function redefinirFiltros() {{
   // Painel superior: volta cada campo ao estado inicial.
   document.getElementById('dataDe').value = '2026-01-01';
-  document.getElementById('dataAte').value = new Date().toISOString().split('T')[0];
+  document.getElementById('dataAte').value = '{PERIODO_FINAL_ISO}';
   document.getElementById('conciliDe').value = '';
   document.getElementById('conciliAte').value = '';
   document.getElementById('filtroCliente').value = '';
