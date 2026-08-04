@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone, timedelta
 import requests
 
-from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG
+from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, DE_PARA
 from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela
 # =============================================================
 # Bloco abaixo: lógica da aba Insights (Custo Fixo/Variável, resumo
@@ -366,11 +366,22 @@ function insCustoPorMes(lancamentosDoMes) {
   lancamentosDoMes.forEach(function (l) {
     if (l.valor >= 0) return;
     const categoriaLimpa = insNormalizarCategoria(l.categoria);
-    const classe = insClassificarCategoria(categoriaLimpa);
-    const valorAbs = Math.abs(l.valor);
-    if (classe === 'fixo') fixo += valorAbs;
-    else if (classe === 'variavel') variavel += valorAbs;
-    else if (classe === 'nao_classificado') naoClassificadas.add(categoriaLimpa);
+    // A Omie às vezes junta mais de uma categoria no mesmo lançamento,
+    // separadas por "; " (ex: "Insumos para Obras; Material de Escritório"),
+    // sem informar o percentual de cada uma. Nesses casos, rateamos o
+    // valor igualmente entre as partes e classificamos cada parte pelo
+    // seu próprio peso (em vez de tratar a string combinada como uma
+    // categoria nova, que nunca bateria com classificacao_custos.json).
+    const partes = categoriaLimpa.split(';').map(function (p) { return p.trim(); }).filter(Boolean);
+    const listaPartes = partes.length > 0 ? partes : [categoriaLimpa];
+    const valorAbsTotal = Math.abs(l.valor);
+    const valorPorParte = valorAbsTotal / listaPartes.length;
+    listaPartes.forEach(function (parte) {
+      const classe = insClassificarCategoria(parte);
+      if (classe === 'fixo') fixo += valorPorParte;
+      else if (classe === 'variavel') variavel += valorPorParte;
+      else if (classe === 'nao_classificado') naoClassificadas.add(parte);
+    });
   });
   return { fixo: fixo, variavel: variavel, naoClassificadas: naoClassificadas };
 }
@@ -1394,6 +1405,21 @@ def formatar_valor_dre_dfc(v):
     return f'<span {cor}>{sinal}R$ {valor_fmt}</span>'
 
 
+def formatar_variacao_percentual(atual, anterior):
+    """Variação percentual em relação ao mês anterior (MoM), pra coluna
+    'Δ%' de cada mês a partir do 2º mês da tabela. Diferente da coluna
+    '%' (Análise Vertical, que compara com a receita/recebimento do
+    MESMO mês) -- essa aqui compara a própria linha com ela mesma no
+    mês anterior. Sem base (mês anterior nulo/zero) retorna '-'."""
+    if atual is None or anterior is None or anterior == 0:
+        return '-'
+    variacao = (atual - anterior) / abs(anterior) * 100
+    sinal = '+' if variacao >= 0 else ''
+    cor = 'style="color:#ff6b6b"' if variacao < 0 else 'style="color:#4ade80"'
+    valor_fmt = f"{variacao:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f'<span {cor}>Δ {sinal}{valor_fmt}%</span>'
+
+
 def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancamentos: list,
                                 meses_dinamicos: list, manual_faturamento: dict,
                                 manual_folha: dict, manual_weg: dict, linha_base_pct: int) -> str:
@@ -1419,7 +1445,37 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
             return None
         return valor / base * 100
 
-    cabecalho = "".join(f"<th>{m}</th><th class=\"dre-col-pct\">%</th>" for m in nomes_meses)
+    # Drill-down: só faz sentido clicar em linhas do tipo "omie_categoria"
+    # (linha-folha, ligada a UMA categoria da Omie) e só nos meses
+    # dinâmicos (Jul/2026 em diante) -- Jan a Jun são cópia manual da
+    # planilha antiga, sem lançamento por trás pra mostrar.
+    item_por_linha = {item["linha"]: item for item in linhas_config}
+    n_estatico = 6  # Jan..Jun
+
+    def montar_celula_valor(linha_num, idx, valor):
+        item = item_por_linha.get(linha_num)
+        eh_omie_categoria = item and item["classif"]["tipo"] == "omie_categoria"
+        if eh_omie_categoria:
+            # Jan-Jun sempre 2026 (linhas "estáticas"/manuais copiadas da
+            # planilha antiga); a partir daí segue meses_dinamicos.
+            if idx < n_estatico:
+                ano, mes = 2026, idx + 1
+            else:
+                ano, mes = meses_dinamicos[idx - n_estatico]
+            categoria_alvo = jsonlib.dumps(item["classif"]["categoria"], ensure_ascii=False)
+            competencia = jsonlib.dumps(item["classif"]["competencia"], ensure_ascii=False)
+            titulo_js = jsonlib.dumps(item["label"], ensure_ascii=False)
+            onclick = (
+                f"abrirDrillDownDreDfc({linha_num}, {ano}, {mes}, "
+                f"{categoria_alvo}, {competencia}, {titulo_js})"
+            )
+            return f'<td class="dre-cell-click" onclick="{onclick}">{formatar_valor_dre_dfc(valor)}</td>'
+        return f"<td>{formatar_valor_dre_dfc(valor)}</td>"
+
+    cabecalho = "".join(
+        f"<th>{m}</th><th class=\"dre-col-pct\">%</th><th class=\"dre-col-delta\">Δ%</th>"
+        for m in nomes_meses
+    )
     linhas_html = []
     for l in linhas:
         classe = "dre-subtotal" if l["subtotal"] else ""
@@ -1427,8 +1483,10 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
         atributo_secao = f' data-secao="{l["linha"]}" onclick="toggleSecaoDreDfc(this)"' if l["eh_secao"] else ""
         marcador = '<span class="dre-toggle">▾</span> ' if l["eh_secao"] else ""
         celulas = "".join(
-            f"<td>{formatar_valor_dre_dfc(v)}</td>"
+            f"{montar_celula_valor(l['linha'], i, v)}"
             f'<td class="dre-col-pct">{formatar_percentual(av_percent(v, i))}</td>'
+            f'<td class="dre-col-delta">'
+            f'{formatar_variacao_percentual(v, l["valores"][i - 1] if i > 0 else None)}</td>'
             for i, v in enumerate(l["valores"])
         )
         linhas_html.append(
@@ -1453,6 +1511,7 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
 def gerar_html(contas: list) -> str:
     agora = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     dados_json = jsonlib.dumps(contas, ensure_ascii=False)
+    de_para_json = jsonlib.dumps(DE_PARA, ensure_ascii=False)
 
     # --- DRE / DFC: consolida todos os lançamentos de todas as contas (não
     # segue os filtros da aba "Lançamentos" -- é sempre a visão completa do
@@ -1649,6 +1708,46 @@ def gerar_html(contas: list) -> str:
   .dre-dfc-tabela tr[data-secao] td.dre-label {{ cursor: pointer; }}
   .dre-dfc-tabela tr.dre-colapsada {{ display: none; }}
   .dre-col-pct {{ font-size: 10.5px; color: var(--text-faint); min-width: 50px; }}
+  .dre-col-delta {{ font-size: 10.5px; min-width: 60px; }}
+  .dre-cell-click {{ cursor: pointer; transition: background .1s, outline-color .1s; }}
+  .dre-cell-click:hover {{ background: rgba(250,168,33,0.14); outline: 1px solid var(--laranja); outline-offset: -1px; }}
+
+  #drillDownOverlay {{
+    position: fixed; inset: 0; z-index: 9998; background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }}
+  #drillDownOverlay.aberto {{ display: flex; }}
+  .drilldown-caixa {{
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
+    width: 100%; max-width: 1100px; max-height: 85vh; display: flex; flex-direction: column;
+    overflow: hidden;
+  }}
+  .drilldown-cabecalho {{
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }}
+  .drilldown-cabecalho h3 {{ margin: 0 0 4px 0; font-size: 15px; }}
+  .drilldown-cabecalho .sub {{ font-size: 12px; color: var(--text-muted); }}
+  .drilldown-fechar {{
+    background: none; border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+  }}
+  .drilldown-fechar:hover {{ border-color: var(--laranja); color: var(--laranja); }}
+  .drilldown-corpo {{ overflow: auto; padding: 0 20px 20px; }}
+  .drilldown-tabela {{ width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 12px; }}
+  .drilldown-tabela th {{
+    text-align: left; padding: 6px 10px; color: var(--text-muted); font-weight: 600;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-panel);
+  }}
+  .drilldown-tabela td {{ padding: 6px 10px; border-top: 1px solid var(--border); white-space: nowrap; }}
+  .drilldown-tabela td.valor {{ text-align: right; font-weight: 600; }}
+  .drilldown-total {{ font-weight: 800; background: rgba(54,91,221,0.08); }}
+  .drilldown-vazio {{ padding: 24px 0; text-align: center; color: var(--text-muted); font-size: 13px; }}
+  .drilldown-aviso {{
+    margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm);
+    background: rgba(250,168,33,0.12); border: 1px solid rgba(250,168,33,0.4);
+    font-size: 12px; color: var(--laranja);
+  }}
   .dre-pendente {{ color: var(--cyan); font-style: italic; font-size: 10.5px; }}
 
   .saldo-total-wrap {{ padding: 14px 32px 0; }}
@@ -1928,6 +2027,85 @@ def gerar_html(contas: list) -> str:
 
 <script>
 const DADOS = {dados_json};
+const DRE_DE_PARA = {de_para_json};
+
+// ---- Drill-down DRE/DFC: clique numa célula de valor (Jul/2026 em diante,
+// só nas linhas ligadas a UMA categoria da Omie) pra ver os lançamentos que
+// compõem aquele número. Espelha a MESMA lógica de soma do
+// engine_dre_dfc.py (normalizar_categoria + mes_efetivo), senão a lista
+// mostrada não bateria com o valor exibido na tabela.
+function dreNormalizarCategoria(bruta) {{
+  const c = (bruta || '').trim();
+  return Object.prototype.hasOwnProperty.call(DRE_DE_PARA, c) ? DRE_DE_PARA[c] : c;
+}}
+
+function dreMesEfetivo(dataBr, competencia) {{
+  const iso = paraDataISO(dataBr);
+  if (!iso) return null;
+  let [ano, mes] = iso.split('-').map(Number);
+  if (competencia === 'Mês Anterior') {{
+    mes -= 1;
+    if (mes === 0) {{ mes = 12; ano -= 1; }}
+  }}
+  return {{ ano, mes }};
+}}
+
+function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, tituloLinha) {{
+  const todos = insTodosLancamentos();
+  const filtrados = todos.filter(function (l) {{
+    if (dreNormalizarCategoria(l.categoria) !== categoriaAlvo) return false;
+    const eff = dreMesEfetivo(l.data, competencia);
+    return eff && eff.ano === ano && eff.mes === mes;
+  }});
+
+  const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const ehManual = (ano < 2026) || (ano === 2026 && mes < 7);
+  document.getElementById('drillDownTitulo').textContent = tituloLinha;
+  document.getElementById('drillDownSubtitulo').textContent =
+    `${{nomesMes[mes - 1]}}/${{ano}} — categoria "${{categoriaAlvo}}" — ${{filtrados.length}} lançamento(s)`;
+
+  const corpo = document.getElementById('drillDownCorpo');
+  const avisoManual = ehManual
+    ? '<div class="drilldown-aviso">⚠️ O valor dessa célula foi digitado manualmente (cópia da planilha antiga) — a soma dos lançamentos abaixo vem direto da Omie e pode não bater exatamente com ele.</div>'
+    : '';
+  if (!filtrados.length) {{
+    corpo.innerHTML = avisoManual + '<div class="drilldown-vazio">Nenhum lançamento encontrado pra esse mês/categoria.</div>';
+  }} else {{
+    filtrados.sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+    const total = filtrados.reduce((s, l) => s + (l.valor || 0), 0);
+    const linhasHtml = filtrados.map(l => `
+      <tr>
+        <td>${{l.data || '-'}}</td>
+        <td>${{l.empresaNome || '-'}}</td>
+        <td>${{l.contaNome || '-'}}</td>
+        <td>${{l.cliente || '-'}}</td>
+        <td>${{l.departamento || '-'}}</td>
+        <td>${{l.observacao || '-'}}</td>
+        <td class="valor">${{fmtMoeda(l.valor || 0)}}</td>
+      </tr>
+    `).join('');
+    corpo.innerHTML = avisoManual + `
+      <table class="drilldown-tabela">
+        <thead><tr>
+          <th>Data</th><th>Empresa</th><th>Banco/Cartão</th><th>Cliente/Fornecedor</th>
+          <th>Departamento</th><th>Observação</th><th style="text-align:right">Valor</th>
+        </tr></thead>
+        <tbody>
+          ${{linhasHtml}}
+          <tr class="drilldown-total">
+            <td colspan="6">Total (${{filtrados.length}} lançamento(s))</td>
+            <td class="valor">${{fmtMoeda(total)}}</td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+  }}
+  document.getElementById('drillDownOverlay').classList.add('aberto');
+}}
+
+function fecharDrillDownDreDfc() {{
+  document.getElementById('drillDownOverlay').classList.remove('aberto');
+}}
 
 // Definição das colunas da tabela, usadas tanto para montar o cabeçalho
 // quanto para o filtro estilo Excel de cada coluna.
@@ -2247,15 +2425,23 @@ function renderizar() {{
       if (dadosConta.tipo === 'banco') {{
         saldoTotalBancos += saldoConta;
       }}
-      const boxSaldo = document.createElement('div');
-      boxSaldo.className = 'box-saldo';
-      boxSaldo.innerHTML = `
-        <div class="label">${{nomeConta}}</div>
-        <div class="valor-saldo">${{fmtMoeda(saldoConta)}}</div>
-        <div class="ref">${{rotuloSaldo}}</div>
-      `;
-      saldosContainer.appendChild(boxSaldo);
+      // Cartões de crédito não geram caixa de "saldo real" nem card de
+      // Entradas/Saídas/Saldo no topo — ficavam redundantes, sempre
+      // zerados. Continuam disponíveis no filtro de coluna "Banco/Cartão"
+      // da tabela normalmente.
+      if (dadosConta.tipo === 'banco') {{
+        const boxSaldo = document.createElement('div');
+        boxSaldo.className = 'box-saldo';
+        boxSaldo.innerHTML = `
+          <div class="label">${{nomeConta}}</div>
+          <div class="valor-saldo">${{fmtMoeda(saldoConta)}}</div>
+          <div class="ref">${{rotuloSaldo}}</div>
+        `;
+        saldosContainer.appendChild(boxSaldo);
+      }}
     }}
+
+    if (dadosConta && dadosConta.tipo === 'cartao') return;
 
     const entradas = doConta.filter(l => l.valor > 0).reduce((s, l) => s + l.valor, 0);
     const saidas = doConta.filter(l => l.valor < 0).reduce((s, l) => s + l.valor, 0);
@@ -2522,6 +2708,19 @@ renderizar();
 
 <div id="abaDFC" style="display:none">{html_dfc}</div>
 <div id="abaDRE" style="display:none">{html_dre}</div>
+
+<div id="drillDownOverlay" onclick="if(event.target===this) fecharDrillDownDreDfc()">
+  <div class="drilldown-caixa">
+    <div class="drilldown-cabecalho">
+      <div>
+        <h3 id="drillDownTitulo"></h3>
+        <div class="sub" id="drillDownSubtitulo"></div>
+      </div>
+      <button class="drilldown-fechar" onclick="fecharDrillDownDreDfc()">✕</button>
+    </div>
+    <div class="drilldown-corpo" id="drillDownCorpo"></div>
+  </div>
+</div>
 {html_insights}
 
 <script>
