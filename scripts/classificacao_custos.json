@@ -62,8 +62,25 @@
     "Franquia do Seguro",
     "Taxas Bancárias e de Cartão",
     "Combustível - Operação",
+    "Combustível Operação",
+    "Combustível",
     "Hospedagem",
-    "Transporte e Estacionamento"
+    "Transporte e Estacionamento",
+    "Honorários de Consultoria",
+    "Material de Higiena/Limpeza/Copa/Cozinha",
+    "Tarifas e Serviços Bancários",
+    "Ajuda de Custo",
+    "FGTS",
+    "Férias",
+    "INSS",
+    "PGR/PCMSO/Exames Periódicos",
+    "Plano de Saúde",
+    "Rescisão Contratual",
+    "Salários",
+    "Seguro de Vida",
+    "Vale Alimentação",
+    "Vale Transporte",
+    "Reembolso"
   ],
 
   "variavel": [
@@ -124,7 +141,19 @@
     "Juros de Empréstimos e Financiamentos",
     "Combustível - Ajuda de Custo",
     "Alimentação",
-    "Publicidade e Marketing"
+    "Publicidade e Marketing",
+    "Despesas com ART e TRT",
+    "Despesas com Marketing",
+    "Fretes sobre Vendas",
+    "Indicações",
+    "Premiação",
+    "Repasse de Rendimentos PS Energia",
+    "Vale Alimentacao - Comercial",
+    "Aluguel de Veículos",
+    "Metalon",
+    "Operações Estruturadas",
+    "Simples Nacional (DAS)",
+    "SIMPLES NACIONAL"
   ],
 
   "ignorar": [
@@ -159,13 +188,16 @@
     "COFINS",
     "ISS",
     "Devoluções e Abatimentos",
-    "Simples Nacional (DAS)",
     "IRRF",
     "Descontos",
     "Descontos Cartão",
     "Juros recebidos de clientes",
     "Confraternização",
-    "Campanhas Comemorativas"
+    "Campanhas Comemorativas",
+    "Consorcios",
+    "Despesas nao operacionais",
+    "Devoluções",
+    "Empréstimos Internos"
   ],
 
   "nao_classificado": []
