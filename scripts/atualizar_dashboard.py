@@ -1758,6 +1758,7 @@ def gerar_html(contas: list) -> str:
 
   if (tentarLerLoginSalvo()) {{
     document.body.classList.remove('nao-autenticado');
+    document.getElementById('loginOverlay').style.display = 'none';
   }}
 
   document.getElementById('formLogin').addEventListener('submit', function (e) {{
@@ -1767,6 +1768,7 @@ def gerar_html(contas: list) -> str:
     if (USUARIOS_LOGIN[usuario] && USUARIOS_LOGIN[usuario] === senha) {{
       tentarSalvarLogin();
       document.body.classList.remove('nao-autenticado');
+      document.getElementById('loginOverlay').style.display = 'none';
     }} else {{
       document.getElementById('loginErro').textContent = 'Usuário ou senha incorretos.';
     }}
