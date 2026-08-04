@@ -24,6 +24,766 @@ import requests
 
 from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG
 from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela
+# =============================================================
+# Bloco abaixo: lógica da aba Insights (Custo Fixo/Variável, resumo
+# da DRE, e o HTML/JS da aba). Fica isolado aqui dentro só visualmente
+# -- é código igual ao que estaria num arquivo insights_helpers.py
+# separado, só que colado direto neste arquivo por preferência do
+# usuário, para manter tudo num único script.
+# =============================================================
+
+# ---------------------------------------------------------------------------
+# CONFIGURAÇÕES EDITÁVEIS
+# Ajuste esses valores livremente conforme a necessidade do time financeiro,
+# sem precisar mexer em mais nada do script.
+# ---------------------------------------------------------------------------
+
+# Saldo abaixo deste valor, em qualquer conta bancária, dispara o alerta de
+# "Contas com saldo baixo" na aba Insights.
+LIMITE_SALDO_BAIXO = 10000
+
+# Quantos meses completos anteriores usar para calcular a média de queima de
+# caixa (usada no cálculo do Runway).
+MESES_RUNWAY = 3
+
+# Janela (em dias, a partir de hoje) considerada "em aberto" para os cards de
+# A Receber / A Pagar na Saúde de Caixa.
+PROXIMOS_DIAS_A_RECEBER_PAGAR = 90
+
+
+def carregar_classificacao_custos(caminho_base: str) -> dict:
+    """Lê classificacao_custos.json (esperado na raiz do repositório, junto
+    com atualizar_dashboard.py) e retorna um dicionário com as 4 listas:
+    fixo, variavel, ignorar, nao_classificado.
+
+    Se o arquivo não existir ou tiver algum erro, devolve listas vazias --
+    nesse caso toda categoria de despesa cai em "não classificada" no
+    dashboard, o que é seguro (só gera um alerta visual, não quebra nada)."""
+    caminho = os.path.join(caminho_base, "classificacao_custos.json")
+    padrao = {"fixo": [], "variavel": [], "ignorar": [], "nao_classificado": []}
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            dados = jsonlib.load(f)
+        for chave in padrao:
+            padrao[chave] = dados.get(chave, [])
+    except FileNotFoundError:
+        print(
+            "AVISO: classificacao_custos.json não encontrado -- Custo Fixo/Variável "
+            "ficará vazio até o arquivo ser adicionado na raiz do repositório."
+        )
+    except Exception as erro:
+        print(f"AVISO: erro ao ler classificacao_custos.json: {erro}")
+    return padrao
+
+
+def extrair_linha_dre(linhas: list, label_alvo: str) -> list:
+    """Busca, dentro da lista de linhas já calculadas pela engine de DRE
+    (montar_linhas_tabela), a linha cujo label bate exatamente com
+    label_alvo, e devolve sua lista de valores mensais. Se não encontrar,
+    devolve uma lista de None do mesmo tamanho -- os cards tratam None como
+    "sem dado" em vez de quebrar."""
+    for linha in linhas:
+        if linha.get("label") == label_alvo:
+            return linha.get("valores", [])
+    tamanho = len(linhas[0]["valores"]) if linhas else 12
+    return [None] * tamanho
+
+
+def montar_resumo_dre(linhas_dre: list, nomes_meses: list) -> dict:
+    """Monta o resumo mensal de Receita Bruta, Lucro Bruto, EBITDA e Lucro
+    Líquido, extraído das linhas já calculadas da DRE -- os mesmos números
+    que já aparecem na aba DRE, só isolados para os cards da Insights.
+
+    Os labels abaixo precisam bater exatamente com os usados em
+    dre_dfc_dados.py. Se algum desses nomes mudar lá, ajuste a string
+    correspondente aqui também."""
+    return {
+        "nomesMeses": nomes_meses,
+        "receitaBruta": extrair_linha_dre(linhas_dre, "Receita Operacional Bruta"),
+        "lucroBruto": extrair_linha_dre(linhas_dre, "(=) Lucro Bruto"),
+        "ebitda": extrair_linha_dre(linhas_dre, "(=) Resultado Operacional (EBITDA)"),
+        "lucroLiquido": extrair_linha_dre(linhas_dre, "(=) Lucro / Prejuízo Líquido do Exercício"),
+    }
+
+
+def montar_html_insights(dre_resumo_json: str, classificacao_custos_json: str, insights_config_json: str) -> str:
+    """Monta o HTML+JS completo da aba Insights, injetando os 3 blocos de
+    dados (JSON) nos pontos marcados por placeholders. Usa .replace() (não
+    f-string/.format()) de propósito, para não precisar escapar as chaves
+    { } do JavaScript abaixo."""
+    html = INSIGHTS_HTML_TEMPLATE
+    html = html.replace("__DRE_RESUMO_JSON__", dre_resumo_json)
+    html = html.replace("__CLASSIFICACAO_JSON__", classificacao_custos_json)
+    html = html.replace("__INSIGHTS_CONFIG_JSON__", insights_config_json)
+    return html
+
+
+INSIGHTS_HTML_TEMPLATE = """
+<div id="abaInsights" style="display:none">
+<style>
+  #abaInsights .ins-wrap { padding: 20px 32px 40px; }
+  #abaInsights h2 { margin-top: 32px; }
+  #abaInsights h2:first-child { margin-top: 8px; }
+
+  #abaInsights .ins-alerta-nc {
+    background: rgba(250,168,33,0.12); border: 1px solid var(--laranja);
+    border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12.5px;
+    color: var(--laranja); margin-bottom: 18px;
+  }
+  #abaInsights .ins-alerta-nc code { color: var(--cyan); }
+
+  #abaInsights .ins-hero {
+    background: linear-gradient(135deg, rgba(250,168,33,.12), rgba(54,91,221,.12));
+    border: 1px solid var(--laranja); border-radius: var(--radius);
+    padding: 20px 24px; display: flex; justify-content: space-between;
+    align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 8px;
+  }
+  #abaInsights .ins-hero-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+  #abaInsights .ins-hero-value { font-size: 32px; font-weight: 800; color: var(--laranja); }
+  #abaInsights .ins-hero-stats { display: flex; gap: 26px; flex-wrap: wrap; }
+  #abaInsights .ins-hero-stat .l { font-size: 11px; color: var(--text-muted); }
+  #abaInsights .ins-hero-stat .v { font-size: 16px; font-weight: 700; }
+
+  #abaInsights .ins-grid { display: grid; gap: 14px; grid-template-columns: repeat(4, 1fr); }
+  #abaInsights .ins-grid-3 { grid-template-columns: repeat(3, 1fr); }
+  #abaInsights .ins-grid-2 { grid-template-columns: 2fr 1fr; }
+
+  #abaInsights .ins-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 12px 14px;
+  }
+  #abaInsights .ins-kpi-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
+  #abaInsights .ins-kpi-value { font-size: 21px; font-weight: 800; }
+  #abaInsights .ins-delta { font-size: 11.5px; margin-top: 5px; font-weight: 600; }
+  #abaInsights .ins-up { color: var(--green); }
+  #abaInsights .ins-down { color: var(--red); }
+  #abaInsights .ins-neutro { color: var(--text-faint); }
+
+  #abaInsights .ins-clickable { cursor: pointer; position: relative; transition: border-color .15s, background .15s; }
+  #abaInsights .ins-clickable:hover { border-color: var(--laranja); background: #1c2841; }
+  #abaInsights .ins-clickable::after {
+    content: 'clique para detalhar ▾'; position: absolute; top: 12px; right: 14px;
+    font-size: 9.5px; color: var(--text-faint); opacity: 0; transition: opacity .15s;
+  }
+  #abaInsights .ins-clickable:hover::after { opacity: 1; }
+
+  #abaInsights .ins-detail-panel { max-height: 0; overflow: hidden; transition: max-height .25s ease; }
+  #abaInsights .ins-detail-panel.aberto { max-height: 420px; overflow-y: auto; margin-top: 12px; }
+  #abaInsights .ins-detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #abaInsights .ins-detail-table th {
+    text-align: left; color: var(--text-faint); font-weight: 600; padding: 5px 6px;
+    border-bottom: 1px solid var(--border); font-size: 9.5px; text-transform: uppercase;
+  }
+  #abaInsights .ins-detail-table td { padding: 6px 6px; border-bottom: 1px solid var(--border); }
+  #abaInsights .ins-detail-table tr:last-child td { border-bottom: none; }
+
+  #abaInsights .ins-mini-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 10px; }
+  #abaInsights .ins-mini-table th {
+    text-align: right; color: var(--text-faint); font-weight: 600; padding: 4px 5px;
+    border-bottom: 1px solid var(--border); font-size: 9.5px; text-transform: uppercase;
+  }
+  #abaInsights .ins-mini-table th:first-child, #abaInsights .ins-mini-table td:first-child { text-align: left; }
+  #abaInsights .ins-mini-table td { text-align: right; padding: 5px; border-bottom: 1px solid var(--border); }
+  #abaInsights .ins-mini-table tr:last-child td { border-bottom: none; font-weight: 700; }
+
+  #abaInsights .ins-status-ok { color: var(--green); font-weight: 700; font-size: 10.5px; }
+  #abaInsights .ins-status-bad { color: var(--red); font-weight: 700; font-size: 10.5px; }
+
+  #abaInsights .ins-company-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12.5px; }
+  #abaInsights .ins-company-row:last-child { margin-bottom: 0; }
+  #abaInsights .ins-company-name { width: 150px; flex-shrink: 0; color: var(--text-muted); }
+  #abaInsights .ins-bar-track { flex: 1; background: var(--bg); border-radius: 5px; height: 18px; overflow: hidden; }
+  #abaInsights .ins-bar-fill { height: 100%; display: flex; align-items: center; padding-left: 8px; font-size: 10.5px; font-weight: 700; color: #0e1015; white-space: nowrap; }
+  #abaInsights .ins-company-result { width: 110px; text-align: right; font-weight: 700; flex-shrink: 0; font-size: 12px; }
+
+  #abaInsights .ins-trend-chart { display: flex; align-items: flex-end; gap: 10px; height: 140px; padding-top: 10px; }
+  #abaInsights .ins-trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+  #abaInsights .ins-trend-bars { display: flex; gap: 3px; align-items: flex-end; height: 108px; }
+  #abaInsights .ins-bar { width: 10px; border-radius: 3px 3px 0 0; }
+  #abaInsights .ins-bar-rev { background: var(--accent); }
+  #abaInsights .ins-bar-exp { background: var(--laranja); }
+  #abaInsights .ins-trend-month { font-size: 9.5px; color: var(--text-faint); margin-top: 4px; }
+  #abaInsights .ins-legend { display: flex; gap: 16px; font-size: 10.5px; color: var(--text-muted); margin-bottom: 6px; }
+  #abaInsights .ins-legend span { display: flex; align-items: center; gap: 5px; }
+  #abaInsights .ins-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  #abaInsights .ins-alert-list { display: flex; flex-direction: column; gap: 7px; }
+  #abaInsights .ins-alert-item {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #16223f; border-radius: 7px; padding: 8px 10px;
+    border-left: 3px solid var(--border); font-size: 12px;
+  }
+  #abaInsights .ins-alert-item.ins-warn { border-left-color: var(--red); }
+</style>
+
+<div class="ins-wrap">
+  <div id="insAlertaNaoClassificado"></div>
+  <div id="insightsRoot"></div>
+</div>
+
+<script>
+const DRE_RESUMO = __DRE_RESUMO_JSON__;
+const CLASSIFICACAO_CUSTOS = __CLASSIFICACAO_JSON__;
+const INSIGHTS_CONFIG = __INSIGHTS_CONFIG_JSON__;
+
+function toggleDetalheInsight(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  document.querySelectorAll('.ins-detail-panel.aberto').forEach(function (p) {
+    if (p.id !== id) p.classList.remove('aberto');
+  });
+  el.classList.toggle('aberto');
+}
+
+function insFmtPct(v, casas) {
+  if (v === null || v === undefined || isNaN(v)) return '—';
+  casas = casas === undefined ? 1 : casas;
+  const sinal = v > 0 ? '↑' : (v < 0 ? '↓' : '≈');
+  return sinal + ' ' + Math.abs(v).toFixed(casas) + '%';
+}
+
+function insClasseVariacao(v) {
+  if (v === null || v === undefined) return 'ins-neutro';
+  return v > 0 ? 'ins-up' : (v < 0 ? 'ins-down' : 'ins-neutro');
+}
+
+function insIndiceMesAtual() {
+  const hoje = new Date();
+  if (hoje.getFullYear() === 2026) return hoje.getMonth();
+  return DRE_RESUMO.nomesMeses.length - 1;
+}
+
+function insAnoMesPorIndice(i) {
+  return { ano: 2026, mes: i + 1 };
+}
+
+function insChaveMes(ano, mes) {
+  return ano + '-' + String(mes).padStart(2, '0');
+}
+
+function insTodosLancamentos() {
+  const todos = [];
+  DADOS.forEach(function (conta) {
+    conta.lancamentos.forEach(function (l) {
+      if (l.transferenciaInterna) return;
+      todos.push(Object.assign({}, l, { contaNome: conta.nome, contaTipo: conta.tipo, empresaNome: conta.empresa }));
+    });
+  });
+  return todos;
+}
+
+function insMesDoLancamento(l) {
+  const iso = paraDataISO(l.data);
+  if (!iso) return null;
+  const partes = iso.split('-').map(Number);
+  return { ano: partes[0], mes: partes[1] };
+}
+
+function insAgruparPorMes(lancamentos) {
+  const mapa = {};
+  lancamentos.forEach(function (l) {
+    const info = insMesDoLancamento(l);
+    if (!info) return;
+    const chave = insChaveMes(info.ano, info.mes);
+    if (!mapa[chave]) mapa[chave] = [];
+    mapa[chave].push(l);
+  });
+  return mapa;
+}
+
+function insListaMesesAteAtual() {
+  const idxAtual = insIndiceMesAtual();
+  const lista = [];
+  for (let i = 0; i <= idxAtual; i++) {
+    lista.push({ indice: i, nome: DRE_RESUMO.nomesMeses[i] });
+  }
+  return lista;
+}
+
+function insClassificarCategoria(categoria) {
+  if (CLASSIFICACAO_CUSTOS.fixo.indexOf(categoria) !== -1) return 'fixo';
+  if (CLASSIFICACAO_CUSTOS.variavel.indexOf(categoria) !== -1) return 'variavel';
+  if (CLASSIFICACAO_CUSTOS.ignorar.indexOf(categoria) !== -1) return 'ignorar';
+  return 'nao_classificado';
+}
+
+function insCustoPorMes(lancamentosDoMes) {
+  let fixo = 0, variavel = 0;
+  const naoClassificadas = new Set();
+  lancamentosDoMes.forEach(function (l) {
+    if (l.valor >= 0) return;
+    const classe = insClassificarCategoria(l.categoria);
+    const valorAbs = Math.abs(l.valor);
+    if (classe === 'fixo') fixo += valorAbs;
+    else if (classe === 'variavel') variavel += valorAbs;
+    else if (classe === 'nao_classificado') naoClassificadas.add(l.categoria);
+  });
+  return { fixo: fixo, variavel: variavel, naoClassificadas: naoClassificadas };
+}
+
+function insCalcularSeriesCusto() {
+  const todos = insTodosLancamentos();
+  const mapaPorMes = insAgruparPorMes(todos);
+  const meses = insListaMesesAteAtual();
+  const naoClassificadasGlobal = new Set();
+
+  const serie = meses.map(function (m) {
+    const am = insAnoMesPorIndice(m.indice);
+    const chave = insChaveMes(am.ano, am.mes);
+    const doMes = mapaPorMes[chave] || [];
+    const r = insCustoPorMes(doMes);
+    r.naoClassificadas.forEach(function (c) { naoClassificadasGlobal.add(c); });
+    return { nome: m.nome, indice: m.indice, fixo: r.fixo, variavel: r.variavel };
+  });
+
+  return { serie: serie, naoClassificadas: naoClassificadasGlobal };
+}
+
+function insPontoEquilibrio(indiceMes, custoFixoMes, custoVariavelMes) {
+  const receita = DRE_RESUMO.receitaBruta[indiceMes];
+  if (receita === null || receita === undefined || receita === 0) return null;
+  const margemContribuicao = (receita - custoVariavelMes) / receita;
+  if (margemContribuicao <= 0) return null;
+  return custoFixoMes / margemContribuicao;
+}
+
+function insSaudeCaixa() {
+  const hoje = new Date();
+  const hojeISO = hoje.toISOString().split('T')[0];
+  const limiteData = new Date(hoje.getTime() + INSIGHTS_CONFIG.diasAReceberPagar * 24 * 60 * 60 * 1000);
+  const limiteISO = limiteData.toISOString().split('T')[0];
+
+  const todos = insTodosLancamentos();
+
+  let aReceber = 0, aPagar = 0, inadimplenciaValor = 0, totalTituloReceber = 0;
+  const listaAReceber = [], listaAPagar = [], listaInadimplentes = [];
+
+  todos.forEach(function (l) {
+    const iso = paraDataISO(l.data);
+    const statusUpper = (l.situacaoTitulo || '').toUpperCase();
+    const jaLiquidado = statusUpper === 'PAGO' || statusUpper === 'RECEBIDO';
+    const atrasado = statusUpper.indexOf('ATRAS') !== -1;
+
+    if (l.natureza === 'Contas a Receber') {
+      if (statusUpper && statusUpper !== '-') totalTituloReceber += Math.abs(l.valor);
+      if (atrasado) {
+        inadimplenciaValor += Math.abs(l.valor);
+        listaInadimplentes.push(l);
+      }
+      if (!jaLiquidado && !atrasado && iso && iso >= hojeISO && iso <= limiteISO) {
+        aReceber += Math.abs(l.valor);
+        listaAReceber.push(l);
+      }
+    }
+    if (l.natureza === 'Contas a Pagar') {
+      if (!jaLiquidado && !atrasado && iso && iso >= hojeISO && iso <= limiteISO) {
+        aPagar += Math.abs(l.valor);
+        listaAPagar.push(l);
+      }
+    }
+  });
+
+  const taxaInadimplencia = totalTituloReceber > 0 ? (inadimplenciaValor / totalTituloReceber * 100) : 0;
+
+  let saldoBancarioAtual = 0;
+  DADOS.forEach(function (conta) {
+    if (conta.tipo === 'banco') saldoBancarioAtual += calcularSaldoNaData(conta, hojeISO);
+  });
+
+  const idxAtual = insIndiceMesAtual();
+  const mapaPorMes = insAgruparPorMes(todos);
+  let somaQueima = 0, mesesContados = 0;
+  for (let i = 1; i <= INSIGHTS_CONFIG.mesesRunway; i++) {
+    const idx = idxAtual - i;
+    if (idx < 0) continue;
+    const am = insAnoMesPorIndice(idx);
+    const doMes = mapaPorMes[insChaveMes(am.ano, am.mes)] || [];
+    const entradas = doMes.filter(function (l) { return l.valor > 0; }).reduce(function (s, l) { return s + l.valor; }, 0);
+    const saidas = doMes.filter(function (l) { return l.valor < 0; }).reduce(function (s, l) { return s + Math.abs(l.valor); }, 0);
+    somaQueima += (saidas - entradas);
+    mesesContados++;
+  }
+  const queimaMedia = mesesContados > 0 ? (somaQueima / mesesContados) : 0;
+  const runwayMeses = queimaMedia > 0 ? (saldoBancarioAtual / queimaMedia) : null;
+
+  return {
+    aReceber: aReceber, listaAReceber: listaAReceber,
+    aPagar: aPagar, listaAPagar: listaAPagar,
+    taxaInadimplencia: taxaInadimplencia, listaInadimplentes: listaInadimplentes,
+    runwayMeses: runwayMeses, saldoBancarioAtual: saldoBancarioAtual,
+  };
+}
+
+function insComparativoEmpresas() {
+  const idxAtual = insIndiceMesAtual();
+  const am = insAnoMesPorIndice(idxAtual);
+  const chave = insChaveMes(am.ano, am.mes);
+  const todos = insTodosLancamentos();
+  const doMes = todos.filter(function (l) {
+    const info = insMesDoLancamento(l);
+    return info && insChaveMes(info.ano, info.mes) === chave;
+  });
+
+  const porEmpresa = {};
+  doMes.forEach(function (l) {
+    if (!porEmpresa[l.empresaNome]) porEmpresa[l.empresaNome] = { receita: 0, despesa: 0 };
+    if (l.valor > 0) porEmpresa[l.empresaNome].receita += l.valor;
+    else porEmpresa[l.empresaNome].despesa += l.valor;
+  });
+
+  return Object.keys(porEmpresa).map(function (nome) {
+    const v = porEmpresa[nome];
+    return { nome: nome, receita: v.receita, despesa: v.despesa, resultado: v.receita + v.despesa };
+  }).sort(function (a, b) { return b.receita - a.receita; });
+}
+
+function insTendenciaMensal() {
+  const meses = insListaMesesAteAtual().slice(-6);
+  const todos = insTodosLancamentos();
+  const mapaPorMes = insAgruparPorMes(todos);
+  return meses.map(function (m) {
+    const am = insAnoMesPorIndice(m.indice);
+    const doMes = mapaPorMes[insChaveMes(am.ano, am.mes)] || [];
+    const entradas = doMes.filter(function (l) { return l.valor > 0; }).reduce(function (s, l) { return s + l.valor; }, 0);
+    const saidas = doMes.filter(function (l) { return l.valor < 0; }).reduce(function (s, l) { return s + Math.abs(l.valor); }, 0);
+    return { nome: m.nome, entradas: entradas, saidas: saidas };
+  });
+}
+
+function insTopCategoriasDespesa() {
+  const idxAtual = insIndiceMesAtual();
+  const am = insAnoMesPorIndice(idxAtual);
+  const chaveAtual = insChaveMes(am.ano, am.mes);
+  const idxAnterior = idxAtual - 1;
+  let chaveAnterior = null;
+  if (idxAnterior >= 0) {
+    const amA = insAnoMesPorIndice(idxAnterior);
+    chaveAnterior = insChaveMes(amA.ano, amA.mes);
+  }
+
+  const todos = insTodosLancamentos();
+  const mapaPorMes = insAgruparPorMes(todos);
+  const doMesAtual = mapaPorMes[chaveAtual] || [];
+  const doMesAnterior = chaveAnterior ? (mapaPorMes[chaveAnterior] || []) : [];
+
+  function somaPorCategoria(lista) {
+    const soma = {};
+    lista.forEach(function (l) {
+      if (l.valor >= 0) return;
+      soma[l.categoria] = (soma[l.categoria] || 0) + Math.abs(l.valor);
+    });
+    return soma;
+  }
+
+  const atual = somaPorCategoria(doMesAtual);
+  const anterior = somaPorCategoria(doMesAnterior);
+
+  return Object.keys(atual)
+    .map(function (categoria) { return [categoria, atual[categoria]]; })
+    .sort(function (a, b) { return b[1] - a[1]; })
+    .slice(0, 5)
+    .map(function (par) {
+      const categoria = par[0], valor = par[1];
+      const valorAnterior = anterior[categoria] || 0;
+      const variacao = valorAnterior > 0 ? ((valor - valorAnterior) / valorAnterior * 100) : null;
+      return { categoria: categoria, valor: valor, variacao: variacao };
+    });
+}
+
+function insDepartamentoMaiorAlta() {
+  const idxAtual = insIndiceMesAtual();
+  const idxAnterior = idxAtual - 1;
+  const todos = insTodosLancamentos();
+  const mapaPorMes = insAgruparPorMes(todos);
+
+  function somaPorDepartamento(chave) {
+    const lista = mapaPorMes[chave] || [];
+    const soma = {};
+    lista.forEach(function (l) {
+      if (l.valor >= 0) return;
+      const valorAbs = Math.abs(l.valor);
+      const rateio = (l.departamentosRateio && l.departamentosRateio.length)
+        ? l.departamentosRateio
+        : [{ nome: l.departamento || '-', percentual: 100 }];
+      rateio.forEach(function (d) {
+        soma[d.nome] = (soma[d.nome] || 0) + valorAbs * (d.percentual || 0) / 100;
+      });
+    });
+    return soma;
+  }
+
+  const am = insAnoMesPorIndice(idxAtual);
+  const somaAtual = somaPorDepartamento(insChaveMes(am.ano, am.mes));
+  let somaAnterior = {};
+  if (idxAnterior >= 0) {
+    const amA = insAnoMesPorIndice(idxAnterior);
+    somaAnterior = somaPorDepartamento(insChaveMes(amA.ano, amA.mes));
+  }
+
+  let maior = null;
+  Object.keys(somaAtual).forEach(function (nome) {
+    const valor = somaAtual[nome];
+    const valorAnterior = somaAnterior[nome] || 0;
+    const variacao = valorAnterior > 0 ? ((valor - valorAnterior) / valorAnterior * 100) : null;
+    if (variacao !== null && (!maior || variacao > maior.variacao)) {
+      maior = { nome: nome, valor: valor, variacao: variacao };
+    }
+  });
+  return maior;
+}
+
+function insContasSaldoBaixo() {
+  const hojeISO = new Date().toISOString().split('T')[0];
+  const resultado = [];
+  DADOS.forEach(function (conta) {
+    if (conta.tipo !== 'banco') return;
+    const saldo = calcularSaldoNaData(conta, hojeISO);
+    if (saldo < INSIGHTS_CONFIG.limiteSaldoBaixo) {
+      resultado.push({ nome: conta.nome, empresa: conta.empresa, saldo: saldo });
+    }
+  });
+  return resultado.sort(function (a, b) { return a.saldo - b.saldo; });
+}
+
+function insMontarTabelaLancamentos(lista, colunas) {
+  if (!lista.length) return '<div class="vazio" style="padding:8px 0;">Nenhum lançamento encontrado.</div>';
+  const linhas = lista.slice(0, 15).map(function (l) {
+    return '<tr>' + colunas.map(function (c) { return '<td>' + c.get(l) + '</td>'; }).join('') + '</tr>';
+  }).join('');
+  const cab = colunas.map(function (c) { return '<th>' + c.label + '</th>'; }).join('');
+  const nota = lista.length > 15 ? '<div style="font-size:10.5px;color:var(--text-faint);margin-top:6px;">mostrando 15 de ' + lista.length + '</div>' : '';
+  return '<table class="ins-detail-table"><thead><tr>' + cab + '</tr></thead><tbody>' + linhas + '</tbody></table>' + nota;
+}
+
+function renderizarInsights() {
+  const idxAtual = insIndiceMesAtual();
+  const idxAnterior = idxAtual - 1;
+  const nomeMesAtual = DRE_RESUMO.nomesMeses[idxAtual] || '';
+
+  const custos = insCalcularSeriesCusto();
+  const saude = insSaudeCaixa();
+  const comparativo = insComparativoEmpresas();
+  const tendencia = insTendenciaMensal();
+  const topCategorias = insTopCategoriasDespesa();
+  const deptoMaiorAlta = insDepartamentoMaiorAlta();
+  const contasBaixas = insContasSaldoBaixo();
+
+  // ---- alerta de categorias não classificadas ----
+  const elAlerta = document.getElementById('insAlertaNaoClassificado');
+  if (custos.naoClassificadas.size > 0) {
+    const lista = Array.from(custos.naoClassificadas).join(', ');
+    elAlerta.innerHTML = '<div class="ins-alerta-nc">⚠️ ' + custos.naoClassificadas.size +
+      ' categoria(s) de despesa ainda não classificada(s) em <code>classificacao_custos.json</code>: <strong>' +
+      lista + '</strong> — está(ão) sendo ignorada(s) no cálculo de Custo Fixo/Variável até você classificá-la(s).</div>';
+  } else {
+    elAlerta.innerHTML = '';
+  }
+
+  // ---- Faturamento em tempo real ----
+  const receitaAtual = DRE_RESUMO.receitaBruta[idxAtual];
+  const receitaAnterior = idxAnterior >= 0 ? DRE_RESUMO.receitaBruta[idxAnterior] : null;
+  let variacaoReceita = null;
+  if (receitaAtual !== null && receitaAnterior) {
+    variacaoReceita = (receitaAtual - receitaAnterior) / receitaAnterior * 100;
+  }
+  const diaDoMes = new Date().getDate();
+  const mediaDiaria = (receitaAtual !== null) ? (receitaAtual / diaDoMes) : null;
+
+  const heroHtml = '' +
+    '<div class="ins-hero">' +
+    '<div><div class="ins-hero-label">Faturamento do mês (' + nomeMesAtual + ') — Receita Operacional Bruta (DRE)</div>' +
+    '<div class="ins-hero-value">' + (receitaAtual !== null ? fmtMoeda(receitaAtual) : '—') + '</div></div>' +
+    '<div class="ins-hero-stats">' +
+    '<div class="ins-hero-stat"><div class="l">vs. mês anterior</div><div class="v ' + insClasseVariacao(variacaoReceita) + '">' + insFmtPct(variacaoReceita) + '</div></div>' +
+    '<div class="ins-hero-stat"><div class="l">Média diária no mês</div><div class="v">' + (mediaDiaria !== null ? fmtMoeda(mediaDiaria) : '—') + '</div></div>' +
+    '</div></div>';
+
+  // ---- Rentabilidade ----
+  function margem(linha) {
+    const atual = linha[idxAtual], anterior = idxAnterior >= 0 ? linha[idxAnterior] : null;
+    const receitaA = DRE_RESUMO.receitaBruta[idxAtual], receitaP = idxAnterior >= 0 ? DRE_RESUMO.receitaBruta[idxAnterior] : null;
+    const margemAtual = (atual !== null && receitaA) ? (atual / receitaA * 100) : null;
+    const margemAnterior = (anterior !== null && receitaP) ? (anterior / receitaP * 100) : null;
+    const deltaPP = (margemAtual !== null && margemAnterior !== null) ? (margemAtual - margemAnterior) : null;
+    return { margemAtual: margemAtual, deltaPP: deltaPP };
+  }
+  const mBruta = margem(DRE_RESUMO.lucroBruto);
+  const mEbitda = margem(DRE_RESUMO.ebitda);
+  const mLiquida = margem(DRE_RESUMO.lucroLiquido);
+
+  function cardMargem(titulo, m) {
+    const deltaTxto = m.deltaPP === null ? '—' : (Math.abs(m.deltaPP).toFixed(1) + ' p.p. ' + (m.deltaPP >= 0 ? 'a mais' : 'a menos') + ' vs mês anterior');
+    return '<div class="ins-card"><div class="ins-kpi-label">' + titulo + '</div>' +
+      '<div class="ins-kpi-value">' + (m.margemAtual !== null ? m.margemAtual.toFixed(1) + '%' : '—') + '</div>' +
+      '<div class="ins-delta ' + insClasseVariacao(m.deltaPP) + '">' + deltaTxto + '</div></div>';
+  }
+  const rentabilidadeHtml = '<div class="ins-grid">' +
+    cardMargem('Margem Bruta', mBruta) + cardMargem('Margem EBITDA', mEbitda) + cardMargem('Margem Líquida', mLiquida) +
+    '<div class="ins-card"><div class="ins-kpi-label">Lucro Líquido do Mês</div>' +
+    '<div class="ins-kpi-value">' + (DRE_RESUMO.lucroLiquido[idxAtual] !== null ? fmtMoeda(DRE_RESUMO.lucroLiquido[idxAtual]) : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">referência: ' + nomeMesAtual + '</div></div>' +
+    '</div>';
+
+  // ---- Saúde de caixa ----
+  const runwayTexto = saude.runwayMeses === null ? 'caixa não está queimando (entradas ≥ saídas)' : saude.runwayMeses.toFixed(1) + ' meses';
+  const saudeHtml = '<div class="ins-grid">' +
+    '<div class="ins-card"><div class="ins-kpi-label">Runway de Caixa</div>' +
+    '<div class="ins-kpi-value">' + runwayTexto + '</div>' +
+    '<div class="ins-delta ins-neutro">saldo bancário atual ÷ queima média (' + INSIGHTS_CONFIG.mesesRunway + ' últimos meses)</div></div>' +
+
+    '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalheReceber'" + ')">' +
+    '<div class="ins-kpi-label">A Receber (em aberto)</div>' +
+    '<div class="ins-kpi-value" style="color:var(--green)">' + fmtMoeda(saude.aReceber) + '</div>' +
+    '<div class="ins-delta ins-neutro">próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias</div>' +
+    '<div class="ins-detail-panel" id="insDetalheReceber">' +
+    insMontarTabelaLancamentos(saude.listaAReceber, [
+      { label: 'Cliente', get: function (l) { return l.cliente; } },
+      { label: 'Empresa', get: function (l) { return l.empresaNome; } },
+      { label: 'Valor', get: function (l) { return fmtMoeda(Math.abs(l.valor)); } },
+      { label: 'Previsão', get: function (l) { return l.data; } },
+    ]) + '</div></div>' +
+
+    '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(\\'insDetalhePagar\\')">' +
+    '<div class="ins-kpi-label">A Pagar (em aberto)</div>' +
+    '<div class="ins-kpi-value" style="color:var(--red)">' + fmtMoeda(saude.aPagar) + '</div>' +
+    '<div class="ins-delta ins-neutro">próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias</div>' +
+    '<div class="ins-detail-panel" id="insDetalhePagar">' +
+    insMontarTabelaLancamentos(saude.listaAPagar, [
+      { label: 'Fornecedor', get: function (l) { return l.cliente; } },
+      { label: 'Empresa', get: function (l) { return l.empresaNome; } },
+      { label: 'Valor', get: function (l) { return fmtMoeda(Math.abs(l.valor)); } },
+      { label: 'Previsão', get: function (l) { return l.data; } },
+    ]) + '</div></div>' +
+
+    '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(\\'insDetalheInadimplencia\\')">' +
+    '<div class="ins-kpi-label">Taxa de Inadimplência</div>' +
+    '<div class="ins-kpi-value">' + saude.taxaInadimplencia.toFixed(1) + '%</div>' +
+    '<div class="ins-delta ins-neutro">' + fmtMoeda(saude.taxaInadimplencia ? (saude.listaInadimplentes.reduce(function(s,l){return s+Math.abs(l.valor);},0)) : 0) + ' em atraso</div>' +
+    '<div class="ins-detail-panel" id="insDetalheInadimplencia">' +
+    insMontarTabelaLancamentos(saude.listaInadimplentes, [
+      { label: 'Cliente', get: function (l) { return l.cliente; } },
+      { label: 'Empresa', get: function (l) { return l.empresaNome; } },
+      { label: 'Valor', get: function (l) { return fmtMoeda(Math.abs(l.valor)); } },
+      { label: 'Venceu em', get: function (l) { return l.data; } },
+    ]) + '</div></div>' +
+    '</div>';
+
+  // ---- Custo Fixo x Variável x Ponto de Equilíbrio ----
+  const ultimo = custos.serie[custos.serie.length - 1];
+  const penultimo = custos.serie.length > 1 ? custos.serie[custos.serie.length - 2] : null;
+  const varFixo = penultimo && penultimo.fixo ? ((ultimo.fixo - penultimo.fixo) / penultimo.fixo * 100) : null;
+  const varVariavel = penultimo && penultimo.variavel ? ((ultimo.variavel - penultimo.variavel) / penultimo.variavel * 100) : null;
+
+  function linhasMiniTabelaCusto(campo) {
+    return custos.serie.map(function (m) {
+      return '<tr><td>' + m.nome + '</td><td>' + fmtMoeda(m[campo]) + '</td></tr>';
+    }).join('');
+  }
+
+  const pontoEquilibrioAtual = insPontoEquilibrio(idxAtual, ultimo.fixo, ultimo.variavel);
+  const linhasPontoEquilibrio = custos.serie.map(function (m) {
+    const pe = insPontoEquilibrio(m.indice, m.fixo, m.variavel);
+    const receitaMes = DRE_RESUMO.receitaBruta[m.indice];
+    let statusHtml = '<span class="ins-neutro">—</span>';
+    if (pe !== null && receitaMes !== null) {
+      statusHtml = receitaMes >= pe
+        ? '<span class="ins-status-ok">✓ Atingido</span>'
+        : '<span class="ins-status-bad">✗ Não atingido</span>';
+    }
+    return '<tr><td>' + m.nome + '</td><td>' + (receitaMes !== null ? fmtMoeda(receitaMes) : '—') + '</td><td>' + statusHtml + '</td></tr>';
+  }).join('');
+
+  const custosHtml = '<div class="ins-grid ins-grid-3">' +
+    '<div class="ins-card"><div class="ins-kpi-label">Custo Fixo Mensal</div>' +
+    '<div class="ins-kpi-value">' + fmtMoeda(ultimo.fixo) + '</div>' +
+    '<div class="ins-delta ' + insClasseVariacao(varFixo) + '">' + insFmtPct(varFixo) + ' vs mês anterior</div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasMiniTabelaCusto('fixo') + '</tbody></table></div>' +
+
+    '<div class="ins-card"><div class="ins-kpi-label">Custo Variável Mensal</div>' +
+    '<div class="ins-kpi-value">' + fmtMoeda(ultimo.variavel) + '</div>' +
+    '<div class="ins-delta ' + insClasseVariacao(varVariavel) + '">' + insFmtPct(varVariavel) + ' vs mês anterior</div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasMiniTabelaCusto('variavel') + '</tbody></table></div>' +
+
+    '<div class="ins-card"><div class="ins-kpi-label">Ponto de Equilíbrio (' + nomeMesAtual + ')</div>' +
+    '<div class="ins-kpi-value" style="color:var(--laranja)">' + (pontoEquilibrioAtual !== null ? fmtMoeda(pontoEquilibrioAtual) : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">receita mínima pra cobrir os custos do mês</div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Receita Real</th><th>Status</th></tr></thead><tbody>' + linhasPontoEquilibrio + '</tbody></table></div>' +
+    '</div>';
+
+  // ---- Comparativo entre empresas ----
+  const maiorReceita = comparativo.length ? Math.max.apply(null, comparativo.map(function (c) { return c.receita; })) : 0;
+  const coresEmpresa = ['var(--laranja)', 'var(--accent)', '#7c8ee0', '#4ecfa8'];
+  const linhasComparativo = comparativo.map(function (c, i) {
+    const pct = maiorReceita > 0 ? (c.receita / maiorReceita * 100) : 0;
+    const classeResultado = c.resultado >= 0 ? 'ins-up' : 'ins-down';
+    const sinal = c.resultado >= 0 ? '+' : '';
+    return '<div class="ins-company-row">' +
+      '<span class="ins-company-name">' + c.nome + '</span>' +
+      '<div class="ins-bar-track"><div class="ins-bar-fill" style="width:' + pct.toFixed(0) + '%;background:' + coresEmpresa[i % coresEmpresa.length] + '">' + fmtMoeda(c.receita) + '</div></div>' +
+      '<span class="ins-company-result ' + classeResultado + '">' + sinal + fmtMoeda(c.resultado) + '</span>' +
+      '</div>';
+  }).join('');
+  const comparativoHtml = '<div class="ins-card">' + (linhasComparativo || '<div class="vazio">Sem lançamentos no mês atual.</div>') + '</div>';
+
+  // ---- Tendência mensal ----
+  const maiorValorTendencia = Math.max.apply(null, tendencia.map(function (t) { return Math.max(t.entradas, t.saidas); }).concat([1]));
+  const colunasTendencia = tendencia.map(function (t) {
+    const alturaEnt = (t.entradas / maiorValorTendencia * 100).toFixed(0);
+    const alturaSai = (t.saidas / maiorValorTendencia * 100).toFixed(0);
+    return '<div class="ins-trend-col"><div class="ins-trend-bars">' +
+      '<div class="ins-bar ins-bar-rev" style="height:' + alturaEnt + '%"></div>' +
+      '<div class="ins-bar ins-bar-exp" style="height:' + alturaSai + '%"></div>' +
+      '</div><div class="ins-trend-month">' + t.nome + '</div></div>';
+  }).join('');
+  const ultimoTendencia = tendencia[tendencia.length - 1];
+  const penultimoTendencia = tendencia.length > 1 ? tendencia[tendencia.length - 2] : null;
+  const crescReceita = penultimoTendencia && penultimoTendencia.entradas ? ((ultimoTendencia.entradas - penultimoTendencia.entradas) / penultimoTendencia.entradas * 100) : null;
+  const crescDespesa = penultimoTendencia && penultimoTendencia.saidas ? ((ultimoTendencia.saidas - penultimoTendencia.saidas) / penultimoTendencia.saidas * 100) : null;
+
+  const tendenciaHtml = '<div class="ins-grid ins-grid-2">' +
+    '<div class="ins-card">' +
+    '<div class="ins-legend"><span><span class="ins-dot" style="background:var(--accent)"></span>Entradas</span><span><span class="ins-dot" style="background:var(--laranja)"></span>Saídas</span></div>' +
+    '<div class="ins-trend-chart">' + colunasTendencia + '</div></div>' +
+    '<div class="ins-card">' +
+    '<div class="ins-kpi-label">Crescimento Entradas (MoM)</div><div class="ins-kpi-value ' + insClasseVariacao(crescReceita) + '" style="font-size:17px">' + insFmtPct(crescReceita) + '</div>' +
+    '<div class="ins-kpi-label" style="margin-top:12px">Crescimento Saídas (MoM)</div><div class="ins-kpi-value ' + insClasseVariacao(crescDespesa) + '" style="font-size:17px">' + insFmtPct(crescDespesa) + '</div>' +
+    '</div></div>';
+
+  // ---- Alertas automáticos ----
+  const linhasTopCategorias = topCategorias.map(function (c) {
+    return '<div class="ins-alert-item"><div><div>' + c.categoria + '</div><div style="font-size:10.5px;color:var(--text-faint)">' + insFmtPct(c.variacao) + ' vs mês anterior</div></div><div>' + fmtMoeda(c.valor) + '</div></div>';
+  }).join('');
+
+  const deptoHtml = deptoMaiorAlta
+    ? '<div class="ins-alert-item ins-warn"><div><div>' + deptoMaiorAlta.nome + '</div><div style="font-size:10.5px;color:var(--text-faint)">' + insFmtPct(deptoMaiorAlta.variacao) + ' vs mês anterior</div></div><div>' + fmtMoeda(deptoMaiorAlta.valor) + '</div></div>'
+    : '<div class="vazio">Sem dado suficiente para comparar.</div>';
+
+  const contasBaixasHtml = contasBaixas.length
+    ? contasBaixas.map(function (c) {
+        return '<div class="ins-alert-item ins-warn"><div><div>' + c.nome + '</div><div style="font-size:10.5px;color:var(--text-faint)">' + c.empresa + '</div></div><div style="color:var(--red)">' + fmtMoeda(c.saldo) + '</div></div>';
+      }).join('')
+    : '<div class="vazio">Nenhuma conta abaixo de ' + fmtMoeda(INSIGHTS_CONFIG.limiteSaldoBaixo) + '.</div>';
+
+  const alertasHtml = '<div class="ins-grid ins-grid-3">' +
+    '<div class="ins-card"><div class="ins-kpi-label">Top 5 categorias de despesa (' + nomeMesAtual + ')</div><div class="ins-alert-list">' + (linhasTopCategorias || '<div class="vazio">Sem despesas no mês.</div>') + '</div></div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Departamento com maior alta</div><div class="ins-alert-list">' + deptoHtml + '</div></div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Contas com saldo baixo (&lt; ' + fmtMoeda(INSIGHTS_CONFIG.limiteSaldoBaixo) + ')</div><div class="ins-alert-list">' + contasBaixasHtml + '</div></div>' +
+    '</div>';
+
+  document.getElementById('insightsRoot').innerHTML =
+    heroHtml +
+    '<h2>📈 Rentabilidade</h2>' + rentabilidadeHtml +
+    '<h2>💰 Saúde de Caixa</h2>' + saudeHtml +
+    '<h2>🎯 Custo Fixo × Variável & Ponto de Equilíbrio</h2>' + custosHtml +
+    '<h2>🏢 Comparativo entre Empresas (' + nomeMesAtual + ')</h2>' + comparativoHtml +
+    '<h2>📊 Tendência — últimos ' + tendencia.length + ' meses</h2>' + tendenciaHtml +
+    '<h2>⚠️ Alertas Automáticos</h2>' + alertasHtml;
+}
+
+renderizarInsights();
+</script>
+</div>
+"""
 
 def _credenciais(env_key: str, env_secret: str):
     """Lê um par de credenciais do ambiente. Se não estiverem configuradas
@@ -585,6 +1345,31 @@ def gerar_html(contas: list) -> str:
         meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 6,
     )
 
+    # --- Dados para a aba Insights -------------------------------------
+    # Reaproveita a mesma engine de cálculo da DRE (montar_linhas_tabela)
+    # para pegar Receita Bruta, Lucro Bruto, EBITDA e Lucro Líquido mês a
+    # mês -- os mesmos números que já aparecem na aba DRE.
+    linhas_dre_calc = montar_linhas_tabela(
+        DRE_LINHAS, todos_lancamentos_grupo, meses_dinamicos,
+        MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG,
+    )
+    nomes_meses_insights = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun'] + [
+        f"{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m-1]}/{a}"
+        for (a, m) in meses_dinamicos
+    ]
+    dre_resumo_json = jsonlib.dumps(montar_resumo_dre(linhas_dre_calc, nomes_meses_insights), ensure_ascii=False)
+
+    diretorio_script = os.path.dirname(os.path.abspath(__file__))
+    classificacao_custos_json = jsonlib.dumps(carregar_classificacao_custos(diretorio_script), ensure_ascii=False)
+
+    insights_config_json = jsonlib.dumps({
+        "limiteSaldoBaixo": LIMITE_SALDO_BAIXO,
+        "mesesRunway": MESES_RUNWAY,
+        "diasAReceberPagar": PROXIMOS_DIAS_A_RECEBER_PAGAR,
+    }, ensure_ascii=False)
+
+    html_insights = montar_html_insights(dre_resumo_json, classificacao_custos_json, insights_config_json)
+
     empresas_unicas = list(dict.fromkeys(c["empresa"] for c in contas))
     checkboxes_empresa_html = "".join(
         f'<label><input type="checkbox" class="chk-empresa" value="{nome}" checked> {nome}</label>'
@@ -853,6 +1638,7 @@ def gerar_html(contas: list) -> str:
   <button class="aba-btn aba-ativa" data-aba="Lancamentos" onclick="mostrarAba('Lancamentos')">Lançamentos</button>
   <button class="aba-btn" data-aba="DFC" onclick="mostrarAba('DFC')">DFC</button>
   <button class="aba-btn" data-aba="DRE" onclick="mostrarAba('DRE')">DRE</button>
+  <button class="aba-btn" data-aba="Insights" onclick="mostrarAba('Insights')">💡 Insights</button>
 </div>
 
 <div id="abaLancamentos">
@@ -1509,12 +2295,14 @@ renderizar();
 
 <div id="abaDFC" style="display:none">{html_dfc}</div>
 <div id="abaDRE" style="display:none">{html_dre}</div>
+{html_insights}
 
 <script>
 function mostrarAba(nome) {{
   document.getElementById('abaLancamentos').style.display = (nome === 'Lancamentos') ? '' : 'none';
   document.getElementById('abaDFC').style.display = (nome === 'DFC') ? '' : 'none';
   document.getElementById('abaDRE').style.display = (nome === 'DRE') ? '' : 'none';
+  document.getElementById('abaInsights').style.display = (nome === 'Insights') ? '' : 'none';
   document.querySelectorAll('.aba-btn').forEach(btn => {{
     btn.classList.toggle('aba-ativa', btn.dataset.aba === nome);
   }});
