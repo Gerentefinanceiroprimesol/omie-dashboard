@@ -131,6 +131,11 @@ INSIGHTS_HTML_TEMPLATE = r"""
     color: var(--laranja); margin-bottom: 18px;
   }
   #abaInsights .ins-alerta-nc code { color: var(--cyan); }
+  #abaInsights .ins-btn-alerta {
+    background: rgba(250,168,33,0.18); border: 1px solid var(--laranja); color: var(--laranja);
+    font-size: 10.5px; font-weight: 700; padding: 4px 10px; border-radius: 5px; cursor: pointer;
+  }
+  #abaInsights .ins-btn-alerta:hover { background: rgba(250,168,33,0.32); }
 
   #abaInsights .ins-hero {
     background: linear-gradient(135deg, rgba(250,168,33,.12), rgba(54,91,221,.12));
@@ -323,8 +328,15 @@ function insListaMesesAteAtual() {
 function insNormalizarCategoria(categoria) {
   if (!categoria) return '-';
   let c = String(categoria).trim();
-  c = c.replace(/\s*\([\d.,]+\s*%\)\s*$/, '');
-  c = c.replace(/\s*\(inativ[ao]\)\s*$/i, '');
+  // Remove QUALQUER percentual de rateio na string, não só o do final --
+  // quando a Omie rateia entre mais de uma categoria (ex: "Insumos para
+  // Obras (33%), Despesas com KITs (0,5%)"), o percentual do meio também
+  // precisa sair, senão cada combinação de percentuais virava uma
+  // "categoria nova" diferente (esse era o motivo da lista de categorias
+  // não classificadas vir cheia de quase-duplicatas).
+  c = c.replace(/\s*\([\d.,]+\s*%\)/g, '');
+  c = c.replace(/\s*\(inativ[ao]\)/gi, '');
+  c = c.replace(/\s{2,}/g, ' ').replace(/\s*,\s*,/g, ',').replace(/^\s*,\s*|\s*,\s*$/g, '');
   return c.trim() || '-';
 }
 
@@ -383,10 +395,14 @@ function insCalcularSeriesCusto() {
 
 function insPontoEquilibrio(indiceMes, custoFixoMes, custoVariavelMes) {
   const receita = DRE_RESUMO.receitaBruta[indiceMes];
-  if (receita === null || receita === undefined || receita === 0) return null;
+  if (receita === null || receita === undefined || receita === 0) {
+    return { valor: null, margemContribuicao: null };
+  }
   const margemContribuicao = (receita - custoVariavelMes) / receita;
-  if (margemContribuicao <= 0) return null;
-  return custoFixoMes / margemContribuicao;
+  if (margemContribuicao <= 0) {
+    return { valor: null, margemContribuicao: margemContribuicao };
+  }
+  return { valor: custoFixoMes / margemContribuicao, margemContribuicao: margemContribuicao };
 }
 
 function insSaudeCaixa() {
@@ -453,6 +469,7 @@ function insSaudeCaixa() {
     aPagar: aPagar, listaAPagar: listaAPagar,
     taxaInadimplencia: taxaInadimplencia, listaInadimplentes: listaInadimplentes,
     runwayMeses: runwayMeses, saldoBancarioAtual: saldoBancarioAtual,
+    queimaMedia: queimaMedia, mesesContadosRunway: mesesContados,
   };
 }
 
@@ -612,16 +629,28 @@ function renderizarInsights() {
   const contasBaixas = insContasSaldoBaixo();
 
   // ---- alerta de categorias não classificadas ----
+  // Compacto por padrão (só a contagem + botões) -- a lista completa fica
+  // escondida atrás de "Ver lista", e "Copiar lista" joga um array JSON
+  // pronto pra área de transferência, facilitando colar no
+  // classificacao_custos.json.
   const elAlerta = document.getElementById('insAlertaNaoClassificado');
   if (custos.naoClassificadas.size > 0) {
     const todasCategorias = Array.from(custos.naoClassificadas).sort();
-    const LIMITE_EXIBICAO = 15;
-    const listaExibida = todasCategorias.slice(0, LIMITE_EXIBICAO).join(', ');
-    const resto = todasCategorias.length - LIMITE_EXIBICAO;
-    const notaResto = resto > 0 ? ' e mais ' + resto + ' categoria(s)' : '';
-    elAlerta.innerHTML = '<div class="ins-alerta-nc">⚠️ ' + custos.naoClassificadas.size +
-      ' categoria(s) de despesa ainda não classificada(s) em <code>classificacao_custos.json</code>: <strong>' +
-      listaExibida + notaResto + '</strong> — está(ão) sendo ignorada(s) no cálculo de Custo Fixo/Variável até você classificá-la(s).</div>';
+    const jsonCategoriasEscapado = JSON.stringify(todasCategorias, null, 2)
+      .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+    elAlerta.innerHTML =
+      '<div class="ins-alerta-nc">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">' +
+      '<span>⚠️ <strong>' + custos.naoClassificadas.size + '</strong> categoria(s) de despesa ainda não classificada(s) em <code>classificacao_custos.json</code> — está(ão) sendo ignorada(s) no cálculo de Custo Fixo/Variável.</span>' +
+      '<span style="white-space:nowrap">' +
+      '<button type="button" class="ins-btn-alerta" onclick="toggleDetalheInsight(' + "'insListaCategoriasNC'" + ')">Ver lista</button> ' +
+      '<button type="button" class="ins-btn-alerta" onclick="navigator.clipboard.writeText(\'' + jsonCategoriasEscapado + '\').then(function(){ this.textContent=\'Copiado!\'; var b=this; setTimeout(function(){ b.textContent=\'Copiar lista\'; }, 1500); }.bind(event.target))">Copiar lista</button>' +
+      '</span>' +
+      '</div>' +
+      '<div class="ins-detail-panel" id="insListaCategoriasNC" style="margin-top:0">' +
+      '<div style="padding-top:8px;border-top:1px solid rgba(250,168,33,0.3);margin-top:8px;">' + todasCategorias.join(' · ') + '</div>' +
+      '</div>' +
+      '</div>';
   } else {
     elAlerta.innerHTML = '';
   }
@@ -676,11 +705,26 @@ function renderizarInsights() {
     '</div>';
 
   // ---- Saúde de caixa ----
-  const runwayTexto = saude.runwayMeses === null ? 'caixa não está queimando (entradas ≥ saídas)' : saude.runwayMeses.toFixed(1) + ' meses';
+  // O Runway sempre mostra um número: quando o caixa está queimando, mostra
+  // "X meses" + a queima média em R$; quando não está queimando (entradas >=
+  // saídas), mostra o crescimento médio mensal em R$ em vez de só a frase
+  // qualitativa "não está queimando", que não dava nenhuma noção de escala.
+  let runwayValorHtml, runwayDeltaHtml;
+  if (saude.mesesContadosRunway === 0) {
+    runwayValorHtml = '—';
+    runwayDeltaHtml = 'sem meses fechados suficientes pra calcular ainda';
+  } else if (saude.runwayMeses !== null) {
+    runwayValorHtml = saude.runwayMeses.toFixed(1) + ' meses';
+    runwayDeltaHtml = 'queima média de ' + fmtMoeda(saude.queimaMedia) + '/mês · saldo bancário ÷ queima média (' + saude.mesesContadosRunway + ' últimos meses)';
+  } else {
+    const crescimentoMedio = -saude.queimaMedia;
+    runwayValorHtml = '<span style="color:var(--green)">Caixa crescendo</span>';
+    runwayDeltaHtml = '+' + fmtMoeda(crescimentoMedio) + '/mês em média, nos últimos ' + saude.mesesContadosRunway + ' meses (entradas > saídas)';
+  }
   const saudeHtml = '<div class="ins-grid">' +
     '<div class="ins-card"><div class="ins-kpi-label">Runway de Caixa</div>' +
-    '<div class="ins-kpi-value">' + runwayTexto + '</div>' +
-    '<div class="ins-delta ins-neutro">saldo bancário atual ÷ queima média (' + INSIGHTS_CONFIG.mesesRunway + ' últimos meses)</div></div>' +
+    '<div class="ins-kpi-value">' + runwayValorHtml + '</div>' +
+    '<div class="ins-delta ins-neutro">' + runwayDeltaHtml + '</div></div>' +
 
     '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalheReceber'" + ')">' +
     '<div class="ins-kpi-label">A Receber (em aberto)</div>' +
@@ -731,9 +775,21 @@ function renderizarInsights() {
     }).join('');
   }
 
-  const pontoEquilibrioAtual = insPontoEquilibrio(idxAtual, ultimo.fixo, ultimo.variavel);
+  // Limiar de margem de contribuição abaixo do qual o Ponto de Equilíbrio
+  // (Custo Fixo ÷ Margem de Contribuição) fica matematicamente instável --
+  // dividir por uma margem muito perto de zero faz o resultado disparar pra
+  // valores desproporcionais em relação aos outros meses, mesmo estando
+  // "certo" pela fórmula. Nesses meses, mostramos um aviso em vez de deixar
+  // o número gigante sem contexto.
+  const LIMIAR_MARGEM_INSTAVEL = 0.05; // 5%
+
+  const peAtualInfo = insPontoEquilibrio(idxAtual, ultimo.fixo, ultimo.variavel);
+  const pontoEquilibrioAtual = peAtualInfo.valor;
+
   const linhasPontoEquilibrio = custos.serie.map(function (m) {
-    const pe = insPontoEquilibrio(m.indice, m.fixo, m.variavel);
+    const info = insPontoEquilibrio(m.indice, m.fixo, m.variavel);
+    const pe = info.valor;
+    const margemBaixa = info.margemContribuicao !== null && info.margemContribuicao > 0 && info.margemContribuicao < LIMIAR_MARGEM_INSTAVEL;
     const receitaMes = DRE_RESUMO.receitaBruta[m.indice];
     let statusHtml = '<span class="ins-neutro">—</span>';
     if (pe !== null && receitaMes !== null) {
@@ -741,7 +797,15 @@ function renderizarInsights() {
         ? '<span class="ins-status-ok">✓ Atingido</span>'
         : '<span class="ins-status-bad">✗ Não atingido</span>';
     }
-    return '<tr><td>' + m.nome + '</td><td>' + (pe !== null ? fmtMoeda(pe) : '—') + '</td><td>' + (receitaMes !== null ? fmtMoeda(receitaMes) : '—') + '</td><td>' + statusHtml + '</td></tr>';
+    let peTexto = '—';
+    if (pe !== null) {
+      peTexto = fmtMoeda(pe);
+      if (margemBaixa) {
+        const margemPct = (info.margemContribuicao * 100).toFixed(1);
+        peTexto += ' <span class="ins-status-bad" title="Margem de contribuição de apenas ' + margemPct + '% neste mês -- o cálculo (Custo Fixo ÷ Margem) fica instável e dispara. Não use este valor como referência.">⚠️</span>';
+      }
+    }
+    return '<tr><td>' + m.nome + '</td><td>' + peTexto + '</td><td>' + (receitaMes !== null ? fmtMoeda(receitaMes) : '—') + '</td><td>' + statusHtml + '</td></tr>';
   }).join('');
 
   const custosHtml = '<div class="ins-grid ins-grid-3">' +
@@ -758,6 +822,7 @@ function renderizarInsights() {
     '<div class="ins-card"><div class="ins-kpi-label">Ponto de Equilíbrio (' + nomeMesAtual + ')</div>' +
     '<div class="ins-kpi-value" style="color:var(--laranja)">' + (pontoEquilibrioAtual !== null ? fmtMoeda(pontoEquilibrioAtual) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">receita mínima pra cobrir os custos do mês</div>' +
+    '<div class="ins-delta ins-neutro" style="margin-top:2px;line-height:1.4">Fórmula: Custo Fixo ÷ Margem de Contribuição, onde Margem de Contribuição = (Receita − Custo Variável) ÷ Receita. Em meses com margem muito baixa (⚠️ na tabela), o cálculo fica instável e dispara — não use esses valores como referência.</div>' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ponto de Equilíbrio</th><th>Receita Real</th><th>Status</th></tr></thead><tbody>' + linhasPontoEquilibrio + '</tbody></table></div>' +
     '</div>';
 
@@ -2152,9 +2217,20 @@ function renderizar() {{
     ${{linhasDepto || '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
   `;
 
-  // Cards e caixas de saldo agora seguem o resultado FINAL da tabela
-  // (incluindo o filtro de coluna "Banco/Cartão"), agrupando por conta.
-  const contasPresentes = [...new Set(filtrados.map(l => l.contaNome))];
+  // As caixas de saldo (e os cards de Entradas/Saídas logo abaixo) agora
+  // mostram SEMPRE todas as contas das empresas marcadas no painel de cima
+  // -- não dependem mais de haver algum lançamento dentro do período/tipo
+  // filtrado. Antes, se uma conta não tivesse nenhum lançamento batendo
+  // com o filtro (ex: Santander sem movimento no dia escolhido), a conta
+  // inteira sumia do dashboard, saldo incluso -- o que não fazia sentido,
+  // já que o saldo da conta existe independente de ter ou não lançamento
+  // naquele recorte. O único filtro que ainda pode "esconder" uma conta
+  // aqui é o filtro estilo Excel da própria coluna "Banco/Cartão" (colFiltros.conta),
+  // porque esse sim é uma escolha explícita do usuário de quais contas ver.
+  const contasSaldoSempre = DADOS
+    .filter(c => empresasChecadas.includes(c.empresa))
+    .filter(c => !colFiltros['conta'] || colFiltros['conta'].has(c.nome))
+    .map(c => c.nome);
 
   // Soma do saldo real (não é a soma de entradas/saídas do período — é o
   // saldo bancário de fato) de todas as contas BANCÁRIAS visíveis no
@@ -2162,7 +2238,7 @@ function renderizar() {{
   // "dinheiro em caixa" de verdade.
   let saldoTotalBancos = 0;
 
-  contasPresentes.forEach(nomeConta => {{
+  contasSaldoSempre.forEach(nomeConta => {{
     const dadosConta = DADOS.find(c => c.nome === nomeConta);
     const doConta = filtrados.filter(l => l.contaNome === nomeConta);
 
@@ -2221,7 +2297,7 @@ function renderizar() {{
   hojeReal.setDate(hojeReal.getDate() - 1);
   const ontemISO = hojeReal.toISOString().split('T')[0];
   let saldoTotalBancosOntem = 0;
-  contasPresentes.forEach(nomeConta => {{
+  contasSaldoSempre.forEach(nomeConta => {{
     const dadosConta = DADOS.find(c => c.nome === nomeConta);
     if (dadosConta && dadosConta.tipo === 'banco') {{
       saldoTotalBancosOntem += calcularSaldoNaData(dadosConta, ontemISO);
