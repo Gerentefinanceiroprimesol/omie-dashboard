@@ -18,6 +18,7 @@ Os filtros só reorganizam o que já foi baixado — não fazem nova chamada
 
 import os
 import json as jsonlib
+import html as htmllib
 import time
 from datetime import datetime, timezone, timedelta
 import requests
@@ -89,20 +90,33 @@ def extrair_linha_dre(linhas: list, label_alvo: str) -> list:
     return [None] * tamanho
 
 
-def montar_resumo_dre(linhas_dre: list, nomes_meses: list) -> dict:
-    """Monta o resumo mensal de Receita Bruta, Lucro Bruto, EBITDA e Lucro
-    Líquido, extraído das linhas já calculadas da DRE -- os mesmos números
-    que já aparecem na aba DRE, só isolados para os cards da Insights.
+def montar_resumo_dre(linhas_dre: list, nomes_meses: list, meses_dinamicos: list, manual_faturamento: dict) -> dict:
+    """Monta o resumo mensal de Receita Bruta, Lucro Bruto, EBITDA, Lucro
+    Líquido e Comissões, extraído das linhas já calculadas da DRE -- os
+    mesmos números que já aparecem na aba DRE, só isolados para os cards
+    da Insights. Também monta o número de vendas do mês (quando informado
+    manualmente), usado pro card de Ticket Médio.
 
     Os labels abaixo precisam bater exatamente com os usados em
     dre_dfc_dados.py. Se algum desses nomes mudar lá, ajuste a string
     correspondente aqui também."""
+    numero_vendas = []
+    for mes in range(1, 7):  # Jan..Jun, sempre 2026 (estático)
+        chave = f"2026-{mes:02d}"
+        numero_vendas.append(manual_faturamento.get(chave, {}).get("numero_vendas"))
+    for (ano, mes) in meses_dinamicos:
+        chave = f"{ano:04d}-{mes:02d}"
+        numero_vendas.append(manual_faturamento.get(chave, {}).get("numero_vendas"))
+
     return {
         "nomesMeses": nomes_meses,
         "receitaBruta": extrair_linha_dre(linhas_dre, "Receita Operacional Bruta"),
         "lucroBruto": extrair_linha_dre(linhas_dre, "(=) Lucro Bruto"),
         "ebitda": extrair_linha_dre(linhas_dre, "(=) Resultado Operacional (EBITDA)"),
         "lucroLiquido": extrair_linha_dre(linhas_dre, "(=) Lucro / Prejuízo Líquido do Exercício"),
+        "comissoesInternas": extrair_linha_dre(linhas_dre, "Comissões Internas"),
+        "comissoesExternas": extrair_linha_dre(linhas_dre, "Comissões Externas"),
+        "numeroVendas": numero_vendas,
     }
 
 
@@ -191,6 +205,12 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-mini-table td { text-align: right; padding: 5px; border-bottom: 1px solid var(--border); }
   #abaInsights .ins-mini-table tr:last-child td { border-bottom: none; font-weight: 700; }
 
+  #abaInsights .ins-rentab-card { margin-top: 14px; }
+  #abaInsights .ins-rentab-table { font-size: 12.5px; }
+  #abaInsights .ins-rentab-table th { padding: 7px 10px; }
+  #abaInsights .ins-rentab-table td { padding: 7px 10px; }
+  #abaInsights .ins-rentab-table tbody tr:hover td { background: rgba(250,168,33,0.05); }
+
   #abaInsights .ins-status-ok { color: var(--green); font-weight: 700; font-size: 10.5px; }
   #abaInsights .ins-status-bad { color: var(--red); font-weight: 700; font-size: 10.5px; }
 
@@ -204,6 +224,16 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-trend-chart { display: flex; align-items: flex-end; gap: 10px; height: 140px; padding-top: 10px; }
   #abaInsights .ins-trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
   #abaInsights .ins-trend-bars { display: flex; gap: 3px; align-items: flex-end; height: 108px; }
+
+  #abaInsights .ins-linechart-svg { width: 100%; height: 220px; display: block; }
+  #abaInsights .ins-linechart-area { fill: url(#insFaturamentoGradiente); }
+  #abaInsights .ins-linechart-linha { fill: none; stroke: var(--laranja); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+  #abaInsights .ins-linechart-ponto { fill: var(--bg-panel); stroke: var(--laranja); stroke-width: 2; }
+  #abaInsights .ins-linechart-ponto-atual { fill: var(--laranja); stroke: var(--bg-panel); stroke-width: 2; }
+  #abaInsights .ins-linechart-grade { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2,3; }
+  #abaInsights .ins-linechart-label { fill: var(--text-faint); font-size: 9.5px; }
+  #abaInsights .ins-linechart-gridlabel { fill: var(--text-faint); font-size: 9px; }
+  #abaInsights .ins-linechart-valor-atual { fill: var(--text); font-size: 11.5px; font-weight: 700; }
   #abaInsights .ins-bar { width: 10px; border-radius: 3px 3px 0 0; }
   #abaInsights .ins-bar-rev { background: var(--accent); }
   #abaInsights .ins-bar-exp { background: var(--laranja); }
@@ -507,16 +537,11 @@ function insComparativoEmpresas() {
   }).sort(function (a, b) { return b.receita - a.receita; });
 }
 
-function insTendenciaMensal() {
-  const meses = insListaMesesAteAtual().slice(-6);
-  const todos = insTodosLancamentos();
-  const mapaPorMes = insAgruparPorMes(todos);
+function insFaturamentoMensal() {
+  const meses = insListaMesesAteAtual();
   return meses.map(function (m) {
-    const am = insAnoMesPorIndice(m.indice);
-    const doMes = mapaPorMes[insChaveMes(am.ano, am.mes)] || [];
-    const entradas = doMes.filter(function (l) { return l.valor > 0; }).reduce(function (s, l) { return s + l.valor; }, 0);
-    const saidas = doMes.filter(function (l) { return l.valor < 0; }).reduce(function (s, l) { return s + Math.abs(l.valor); }, 0);
-    return { nome: m.nome, entradas: entradas, saidas: saidas };
+    const valor = DRE_RESUMO.receitaBruta[m.indice];
+    return { nome: m.nome, indice: m.indice, valor: (valor === null || valor === undefined) ? null : valor };
   });
 }
 
@@ -634,7 +659,7 @@ function renderizarInsights() {
   const custos = insCalcularSeriesCusto();
   const saude = insSaudeCaixa();
   const comparativo = insComparativoEmpresas();
-  const tendencia = insTendenciaMensal();
+  const faturamentoSerie = insFaturamentoMensal();
   const topCategorias = insTopCategoriasDespesa();
   const deptoMaiorAlta = insDepartamentoMaiorAlta();
   const contasBaixas = insContasSaldoBaixo();
@@ -708,12 +733,59 @@ function renderizarInsights() {
       '<div class="ins-kpi-value">' + (m.margemAtual !== null ? m.margemAtual.toFixed(1) + '%' : '—') + '</div>' +
       '<div class="ins-delta ' + insClasseVariacao(m.deltaPP) + '">' + deltaTxto + '</div></div>';
   }
+
+  // ---- Rentabilidade mês a mês (tabela com os 4 indicadores lado a lado) ----
+  function insRentabilidadeMensal() {
+    const meses = insListaMesesAteAtual();
+    return meses.map(function (m) {
+      const receita = DRE_RESUMO.receitaBruta[m.indice];
+      const lb = DRE_RESUMO.lucroBruto[m.indice];
+      const eb = DRE_RESUMO.ebitda[m.indice];
+      const ll = DRE_RESUMO.lucroLiquido[m.indice];
+      function pct(v) { return (v !== null && v !== undefined && receita) ? (v / receita * 100) : null; }
+      return {
+        nome: m.nome,
+        margemBruta: pct(lb),
+        margemEbitda: pct(eb),
+        margemLiquida: pct(ll),
+        lucroLiquido: (ll === null || ll === undefined) ? null : ll,
+      };
+    });
+  }
+  function insMediaSimples(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) / validos.length : null;
+  }
+  function celRentabPct(v) {
+    return v !== null ? '<span class="' + insClasseVariacao(v) + '">' + (v >= 0 ? '+' : '') + v.toFixed(1) + '%</span>' : '<span class="ins-neutro">—</span>';
+  }
+  function celRentabMoeda(v) {
+    return v !== null ? '<span class="' + insClasseVariacao(v) + '">' + fmtMoeda(v) + '</span>' : '<span class="ins-neutro">—</span>';
+  }
+
+  const rentabilidadeSerie = insRentabilidadeMensal();
+  const mediaMB = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemBruta; }));
+  const mediaME = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemEbitda; }));
+  const mediaML = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemLiquida; }));
+  const mediaLL = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.lucroLiquido; }));
+
+  const linhasRentabilidadeMensal = rentabilidadeSerie.map(function (r) {
+    return '<tr><td>' + r.nome + '</td><td>' + celRentabPct(r.margemBruta) + '</td><td>' + celRentabPct(r.margemEbitda) + '</td><td>' + celRentabPct(r.margemLiquida) + '</td><td>' + celRentabMoeda(r.lucroLiquido) + '</td></tr>';
+  }).join('') +
+    '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>';
+
+  const rentabilidadeMensalHtml = '<div class="ins-card ins-rentab-card">' +
+    '<div class="ins-kpi-label">Rentabilidade Mês a Mês</div>' +
+    '<table class="ins-mini-table ins-rentab-table"><thead><tr>' +
+    '<th>Mês</th><th>Margem Bruta</th><th>Margem EBITDA</th><th>Margem Líquida</th><th>Lucro Líquido</th>' +
+    '</tr></thead><tbody>' + linhasRentabilidadeMensal + '</tbody></table></div>';
+
   const rentabilidadeHtml = '<div class="ins-grid">' +
     cardMargem('Margem Bruta', mBruta) + cardMargem('Margem EBITDA', mEbitda) + cardMargem('Margem Líquida', mLiquida) +
     '<div class="ins-card"><div class="ins-kpi-label">Lucro Líquido do Mês</div>' +
     '<div class="ins-kpi-value">' + (DRE_RESUMO.lucroLiquido[idxAtual] !== null ? fmtMoeda(DRE_RESUMO.lucroLiquido[idxAtual]) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">referência: ' + nomeMesAtual + '</div></div>' +
-    '</div>';
+    '</div>' + rentabilidadeMensalHtml;
 
   // ---- Saúde de caixa ----
   // O Runway sempre mostra um número: quando o caixa está queimando, mostra
@@ -781,9 +853,14 @@ function renderizarInsights() {
   const varVariavel = penultimo && penultimo.variavel ? ((ultimo.variavel - penultimo.variavel) / penultimo.variavel * 100) : null;
 
   function linhasMiniTabelaCusto(campo) {
-    return custos.serie.map(function (m) {
+    const linhas = custos.serie.map(function (m) {
       return '<tr><td>' + m.nome + '</td><td>' + fmtMoeda(m[campo]) + '</td></tr>';
     }).join('');
+    // Média simples: soma dos meses disponíveis na série ÷ quantidade de meses.
+    const soma = custos.serie.reduce(function (acc, m) { return acc + m[campo]; }, 0);
+    const media = custos.serie.length > 0 ? soma / custos.serie.length : 0;
+    const linhaMedia = '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + fmtMoeda(media) + '</td></tr>';
+    return linhas + linhaMedia;
   }
 
   // Limiar de margem de contribuição abaixo do qual o Ponto de Equilíbrio
@@ -819,6 +896,27 @@ function renderizarInsights() {
     return '<tr><td>' + m.nome + '</td><td>' + peTexto + '</td><td>' + (receitaMes !== null ? fmtMoeda(receitaMes) : '—') + '</td><td>' + statusHtml + '</td></tr>';
   }).join('');
 
+  // Média simples do Ponto de Equilíbrio e da Receita Real: soma dos meses
+  // disponíveis ÷ quantidade de meses. Meses com PE "—" (margem de
+  // contribuição negativa, cálculo inválido) ficam de fora da média do PE,
+  // mas contam normalmente na média da Receita Real (que é sempre um dado
+  // conhecido, independente do PE ter dado certo naquele mês).
+  let somaPE = 0, contPE = 0, somaReceitaPE = 0, contReceitaPE = 0;
+  custos.serie.forEach(function (m) {
+    const info = insPontoEquilibrio(m.indice, m.fixo, m.variavel);
+    if (info.valor !== null) { somaPE += info.valor; contPE++; }
+    const receitaMes = DRE_RESUMO.receitaBruta[m.indice];
+    if (receitaMes !== null && receitaMes !== undefined) { somaReceitaPE += receitaMes; contReceitaPE++; }
+  });
+  const mediaPE = contPE > 0 ? somaPE / contPE : null;
+  const mediaReceitaPE = contReceitaPE > 0 ? somaReceitaPE / contReceitaPE : null;
+  const obsMediaPE = contPE < custos.serie.length
+    ? ' <span class="ins-neutro" title="Média calculada só com os ' + contPE + ' mês(es) que têm Ponto de Equilíbrio válido, de ' + custos.serie.length + ' mês(es) no total">(' + contPE + '/' + custos.serie.length + ' meses)</span>'
+    : '';
+  const linhaMediaPontoEquilibrio = '<tr style="border-top:2px solid var(--border)"><td>Média' + obsMediaPE + '</td><td>' +
+    (mediaPE !== null ? fmtMoeda(mediaPE) : '—') + '</td><td>' +
+    (mediaReceitaPE !== null ? fmtMoeda(mediaReceitaPE) : '—') + '</td><td></td></tr>';
+
   const custosHtml = '<div class="ins-grid ins-grid-3">' +
     '<div class="ins-card"><div class="ins-kpi-label">Custo Fixo Mensal</div>' +
     '<div class="ins-kpi-value">' + fmtMoeda(ultimo.fixo) + '</div>' +
@@ -834,7 +932,7 @@ function renderizarInsights() {
     '<div class="ins-kpi-value" style="color:var(--laranja)">' + (pontoEquilibrioAtual !== null ? fmtMoeda(pontoEquilibrioAtual) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">receita mínima pra cobrir os custos do mês</div>' +
     '<div class="ins-delta ins-neutro" style="margin-top:2px;line-height:1.4">Fórmula: Custo Fixo ÷ Margem de Contribuição, onde Margem de Contribuição = (Receita − Custo Variável) ÷ Receita. Em meses com margem muito baixa (⚠️ na tabela), o cálculo fica instável e dispara — não use esses valores como referência.</div>' +
-    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ponto de Equilíbrio</th><th>Receita Real</th><th>Status</th></tr></thead><tbody>' + linhasPontoEquilibrio + '</tbody></table></div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ponto de Equilíbrio</th><th>Receita Real</th><th>Status</th></tr></thead><tbody>' + linhasPontoEquilibrio + linhaMediaPontoEquilibrio + '</tbody></table></div>' +
     '</div>';
 
   // ---- Comparativo entre empresas ----
@@ -852,29 +950,175 @@ function renderizarInsights() {
   }).join('');
   const comparativoHtml = '<div class="ins-card">' + (linhasComparativo || '<div class="vazio">Sem lançamentos no mês atual.</div>') + '</div>';
 
-  // ---- Tendência mensal ----
-  const maiorValorTendencia = Math.max.apply(null, tendencia.map(function (t) { return Math.max(t.entradas, t.saidas); }).concat([1]));
-  const colunasTendencia = tendencia.map(function (t) {
-    const alturaEnt = (t.entradas / maiorValorTendencia * 100).toFixed(0);
-    const alturaSai = (t.saidas / maiorValorTendencia * 100).toFixed(0);
-    return '<div class="ins-trend-col"><div class="ins-trend-bars">' +
-      '<div class="ins-bar ins-bar-rev" style="height:' + alturaEnt + '%"></div>' +
-      '<div class="ins-bar ins-bar-exp" style="height:' + alturaSai + '%"></div>' +
-      '</div><div class="ins-trend-month">' + t.nome + '</div></div>';
-  }).join('');
-  const ultimoTendencia = tendencia[tendencia.length - 1];
-  const penultimoTendencia = tendencia.length > 1 ? tendencia[tendencia.length - 2] : null;
-  const crescReceita = penultimoTendencia && penultimoTendencia.entradas ? ((ultimoTendencia.entradas - penultimoTendencia.entradas) / penultimoTendencia.entradas * 100) : null;
-  const crescDespesa = penultimoTendencia && penultimoTendencia.saidas ? ((ultimoTendencia.saidas - penultimoTendencia.saidas) / penultimoTendencia.saidas * 100) : null;
+  // ---- Faturamento mensal (gráfico de linha + tabela) ----
+  const valoresFaturamento = faturamentoSerie.map(function (f) { return f.valor || 0; });
+  const maiorFaturamento = Math.max.apply(null, valoresFaturamento.concat([1]));
+  const menorFaturamento = Math.min.apply(null, valoresFaturamento.concat([0]));
 
-  const tendenciaHtml = '<div class="ins-grid ins-grid-2">' +
-    '<div class="ins-card">' +
-    '<div class="ins-legend"><span><span class="ins-dot" style="background:var(--accent)"></span>Entradas</span><span><span class="ins-dot" style="background:var(--laranja)"></span>Saídas</span></div>' +
-    '<div class="ins-trend-chart">' + colunasTendencia + '</div></div>' +
-    '<div class="ins-card">' +
-    '<div class="ins-kpi-label">Crescimento Entradas (MoM)</div><div class="ins-kpi-value ' + insClasseVariacao(crescReceita) + '" style="font-size:17px">' + insFmtPct(crescReceita) + '</div>' +
-    '<div class="ins-kpi-label" style="margin-top:12px">Crescimento Saídas (MoM)</div><div class="ins-kpi-value ' + insClasseVariacao(crescDespesa) + '" style="font-size:17px">' + insFmtPct(crescDespesa) + '</div>' +
-    '</div></div>';
+  const faturamentoChartHtml = (function () {
+    const largura = 640, altura = 220;
+    const margemEsq = 54, margemDir = 16, margemTopo = 18, margemBaixo = 30;
+    const areaLargura = largura - margemEsq - margemDir;
+    const areaAltura = altura - margemTopo - margemBaixo;
+    const n = faturamentoSerie.length;
+    // Um pouco de folga acima/abaixo do range real, pra a linha não colar
+    // no teto/chão do gráfico.
+    const folga = (maiorFaturamento - menorFaturamento) * 0.12 || maiorFaturamento * 0.12 || 1;
+    const topoEscala = maiorFaturamento + folga;
+    const baseEscala = Math.max(0, menorFaturamento - folga);
+    const range = (topoEscala - baseEscala) || 1;
+    function x(i) { return n > 1 ? margemEsq + (i / (n - 1)) * areaLargura : margemEsq + areaLargura / 2; }
+    function y(v) { return margemTopo + areaAltura - ((v - baseEscala) / range) * areaAltura; }
+
+    function abreviarMoeda(v) {
+      const abs = Math.abs(v);
+      if (abs >= 1000000) return 'R$ ' + (v / 1000000).toFixed(1).replace('.', ',') + 'M';
+      if (abs >= 1000) return 'R$ ' + (v / 1000).toFixed(0) + 'k';
+      return fmtMoeda(v);
+    }
+
+    // Linhas de grade horizontais + rótulo de valor à esquerda (4 faixas).
+    const nFaixas = 4;
+    let linhasGrade = '';
+    for (let f = 0; f <= nFaixas; f++) {
+      const fr = f / nFaixas;
+      const yy = margemTopo + areaAltura * fr;
+      const valorFaixa = topoEscala - fr * range;
+      linhasGrade += '<line x1="' + margemEsq + '" y1="' + yy + '" x2="' + (largura - margemDir) + '" y2="' + yy + '" class="ins-linechart-grade" />' +
+        '<text x="' + (margemEsq - 8) + '" y="' + (yy + 3) + '" text-anchor="end" class="ins-linechart-gridlabel">' + abreviarMoeda(valorFaixa) + '</text>';
+    }
+
+    // Curva suavizada (Catmull-Rom -> Bézier) em vez de linha reta ponto a
+    // ponto -- visualmente mais parecida com um gráfico de tendência "de
+    // verdade" em vez de um zigue-zague.
+    const pts = faturamentoSerie.map(function (f, i) { return [x(i), y(f.valor || 0)]; });
+    function caminhoSuave(pontos) {
+      if (pontos.length < 2) return '';
+      if (pontos.length === 2) return 'M' + pontos[0][0] + ',' + pontos[0][1] + ' L' + pontos[1][0] + ',' + pontos[1][1];
+      let d = 'M' + pontos[0][0] + ',' + pontos[0][1];
+      for (let i = 0; i < pontos.length - 1; i++) {
+        const p0 = pontos[i === 0 ? 0 : i - 1];
+        const p1 = pontos[i];
+        const p2 = pontos[i + 1];
+        const p3 = pontos[i + 2 < pontos.length ? i + 2 : i + 1];
+        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+        d += ' C' + cp1x + ',' + cp1y + ' ' + cp2x + ',' + cp2y + ' ' + p2[0] + ',' + p2[1];
+      }
+      return d;
+    }
+    const caminhoLinha = caminhoSuave(pts);
+    const linhaBase = margemTopo + areaAltura;
+    const caminhoArea = caminhoLinha + ' L' + pts[pts.length - 1][0] + ',' + linhaBase + ' L' + pts[0][0] + ',' + linhaBase + ' Z';
+
+    const circulos = faturamentoSerie.map(function (f, i) {
+      const ehUltimo = i === faturamentoSerie.length - 1;
+      const classe = ehUltimo ? 'ins-linechart-ponto ins-linechart-ponto-atual' : 'ins-linechart-ponto';
+      const raio = ehUltimo ? 5 : 3.5;
+      const rotuloValor = ehUltimo
+        ? '<text x="' + x(i) + '" y="' + (y(f.valor || 0) - 12) + '" text-anchor="middle" class="ins-linechart-valor-atual">' + fmtMoeda(f.valor || 0) + '</text>'
+        : '';
+      return '<circle cx="' + x(i) + '" cy="' + y(f.valor || 0) + '" r="' + raio + '" class="' + classe + '">' +
+        '<title>' + f.nome + ': ' + fmtMoeda(f.valor || 0) + '</title></circle>' + rotuloValor;
+    }).join('');
+    const rotulosX = faturamentoSerie.map(function (f, i) {
+      return '<text x="' + x(i) + '" y="' + (altura - 8) + '" text-anchor="middle" class="ins-linechart-label">' + f.nome + '</text>';
+    }).join('');
+
+    return '<svg viewBox="0 0 ' + largura + ' ' + altura + '" class="ins-linechart-svg" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="insFaturamentoGradiente" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="var(--laranja)" stop-opacity="0.38" />' +
+      '<stop offset="100%" stop-color="var(--laranja)" stop-opacity="0" />' +
+      '</linearGradient></defs>' +
+      linhasGrade +
+      '<path d="' + caminhoArea + '" class="ins-linechart-area" />' +
+      '<path d="' + caminhoLinha + '" class="ins-linechart-linha" />' +
+      circulos + rotulosX +
+      '</svg>';
+  })();
+
+  // Média simples: soma dos meses disponíveis ÷ quantidade de meses (mesmo
+  // critério usado nas tabelas de Custo Fixo/Variável).
+  const somaFaturamento = valoresFaturamento.reduce(function (a, b) { return a + b; }, 0);
+  const mediaFaturamento = faturamentoSerie.length > 0 ? somaFaturamento / faturamentoSerie.length : 0;
+
+  // Total acumulado até o mês ANTERIOR ao último da série -- ou seja, soma
+  // de todos os meses exceto o mais recente (que normalmente ainda está
+  // "fresco"/em fechamento). Se só existir 1 mês na série, não há "mês
+  // anterior" pra somar.
+  const mesesAteAnterior = faturamentoSerie.slice(0, -1);
+  const somaAteMesAnterior = mesesAteAnterior.reduce(function (s, f) { return s + (f.valor || 0); }, 0);
+  const rotuloTotalAnterior = mesesAteAnterior.length > 0
+    ? 'Total até ' + mesesAteAnterior[mesesAteAnterior.length - 1].nome
+    : 'Total até o mês anterior';
+
+  const linhasTabelaFaturamento = faturamentoSerie.map(function (f) {
+    return '<tr><td>' + f.nome + '</td><td>' + (f.valor !== null ? fmtMoeda(f.valor) : '—') + '</td></tr>';
+  }).join('') +
+    (mesesAteAnterior.length > 0
+      ? '<tr style="border-top:2px solid var(--border)"><td>' + rotuloTotalAnterior + '</td><td>' + fmtMoeda(somaAteMesAnterior) + '</td></tr>'
+      : '') +
+    '<tr' + (mesesAteAnterior.length > 0 ? '' : ' style="border-top:2px solid var(--border)"') + '><td>Média</td><td>' + fmtMoeda(mediaFaturamento) + '</td></tr>';
+
+  const faturamentoHtml = '<div class="ins-grid ins-grid-2">' +
+    '<div class="ins-card">' + faturamentoChartHtml + '</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Faturamento Mensal (Receita Operacional Bruta)</div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasTabelaFaturamento + '</tbody></table></div>' +
+    '</div>';
+
+  // ---- Indicadores adicionais: Ticket Médio, Comissão % Receita,
+  // Capital de Giro, EBITDA Acumulado (YTD) ----
+  const receitaAtualInd = DRE_RESUMO.receitaBruta[idxAtual];
+
+  // Ticket Médio = Receita do mês ÷ número de vendas do mês. O nº de
+  // vendas só existe pros meses em que ele foi informado manualmente
+  // junto com o faturamento (não dá pra derivar isso com segurança dos
+  // lançamentos bancários da Omie, porque uma venda parcelada gera vários
+  // lançamentos -- contar lançamentos infla o número de "vendas" e
+  // subestima o ticket médio).
+  const numeroVendasAtual = DRE_RESUMO.numeroVendas[idxAtual];
+  const ticketMedio = (receitaAtualInd !== null && numeroVendasAtual) ? (receitaAtualInd / numeroVendasAtual) : null;
+
+  // Comissão como % da Receita (Internas + Externas, ambas já automáticas
+  // via Omie -- ver DRE_LINHAS 151/152).
+  const comIntAtual = DRE_RESUMO.comissoesInternas[idxAtual];
+  const comExtAtual = DRE_RESUMO.comissoesExternas[idxAtual];
+  const comissaoTotalAtual = (comIntAtual !== null || comExtAtual !== null)
+    ? (Math.abs(comIntAtual || 0) + Math.abs(comExtAtual || 0)) : null;
+  const comissaoPctReceita = (comissaoTotalAtual !== null && receitaAtualInd)
+    ? (comissaoTotalAtual / receitaAtualInd * 100) : null;
+
+  // Capital de Giro = Caixa (saldo bancário real, sem cartão) + A Receber
+  // (próximos dias configurados) − A Pagar (mesmo período). É uma foto do
+  // momento atual, não um valor "do mês fechado" como os outros cards.
+  const capitalDeGiro = saude.saldoBancarioAtual + saude.aReceber - saude.aPagar;
+
+  // EBITDA Acumulado no ano (YTD) = soma do EBITDA de Jan até o mês atual.
+  let ebitdaYtd = 0, mesesComEbitda = 0;
+  for (let i = 0; i <= idxAtual; i++) {
+    const v = DRE_RESUMO.ebitda[i];
+    if (v !== null && v !== undefined) { ebitdaYtd += v; mesesComEbitda++; }
+  }
+
+  const indicadoresHtml = '<div class="ins-grid">' +
+    '<div class="ins-card"><div class="ins-kpi-label">Ticket Médio de Venda (' + nomeMesAtual + ')</div>' +
+    '<div class="ins-kpi-value">' + (ticketMedio !== null ? fmtMoeda(ticketMedio) : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (numeroVendasAtual ? numeroVendasAtual + ' venda(s) no mês' : 'informe o nº de vendas do mês pra calcular') + '</div></div>' +
+
+    '<div class="ins-card"><div class="ins-kpi-label">Comissão sobre a Receita (' + nomeMesAtual + ')</div>' +
+    '<div class="ins-kpi-value">' + (comissaoPctReceita !== null ? comissaoPctReceita.toFixed(1) + '%' : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (comissaoTotalAtual !== null ? fmtMoeda(comissaoTotalAtual) + ' em comissões' : 'sem dado de comissão') + '</div></div>' +
+
+    '<div class="ins-card"><div class="ins-kpi-label">Capital de Giro (hoje)</div>' +
+    '<div class="ins-kpi-value ' + insClasseVariacao(capitalDeGiro) + '">' + fmtMoeda(capitalDeGiro) + '</div>' +
+    '<div class="ins-delta ins-neutro">Caixa + A Receber (' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias) − A Pagar (' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias)</div></div>' +
+
+    '<div class="ins-card"><div class="ins-kpi-label">EBITDA Acumulado no Ano</div>' +
+    '<div class="ins-kpi-value ' + insClasseVariacao(ebitdaYtd) + '">' + fmtMoeda(ebitdaYtd) + '</div>' +
+    '<div class="ins-delta ins-neutro">Jan a ' + nomeMesAtual + ' (' + mesesComEbitda + ' mês(es))</div></div>' +
+    '</div>';
 
   // ---- Alertas automáticos ----
   const linhasTopCategorias = topCategorias.map(function (c) {
@@ -901,9 +1145,10 @@ function renderizarInsights() {
     heroHtml +
     '<h2>📈 Rentabilidade</h2>' + rentabilidadeHtml +
     '<h2>💰 Saúde de Caixa</h2>' + saudeHtml +
+    '<h2>📌 Outros Indicadores</h2>' + indicadoresHtml +
     '<h2>🎯 Custo Fixo × Variável & Ponto de Equilíbrio</h2>' + custosHtml +
     '<h2>🏢 Comparativo entre Empresas (' + nomeMesAtual + ')</h2>' + comparativoHtml +
-    '<h2>📊 Tendência — últimos ' + tendencia.length + ' meses</h2>' + tendenciaHtml +
+    '<h2>📈 Faturamento Mensal</h2>' + faturamentoHtml +
     '<h2>⚠️ Alertas Automáticos</h2>' + alertasHtml;
 }
 
@@ -1469,7 +1714,14 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
                 f"abrirDrillDownDreDfc({linha_num}, {ano}, {mes}, "
                 f"{categoria_alvo}, {competencia}, {titulo_js})"
             )
-            return f'<td class="dre-cell-click" onclick="{onclick}">{formatar_valor_dre_dfc(valor)}</td>'
+            # As strings acima (categoria/competência/título) vêm de json.dumps,
+            # que usa aspas DUPLAS -- e o atributo onclick também é delimitado
+            # por aspas duplas. Sem escapar, o navegador fecha o atributo no
+            # primeiro " que aparecer (logo no início) e o clique não funciona
+            # (o resto vira HTML solto, inválido). html.escape com quote=True
+            # troca esses " internos por &quot;, resolvendo o conflito.
+            onclick_seguro = htmllib.escape(onclick, quote=True)
+            return f'<td class="dre-cell-click" onclick="{onclick_seguro}">{formatar_valor_dre_dfc(valor)}</td>'
         return f"<td>{formatar_valor_dre_dfc(valor)}</td>"
 
     cabecalho = "".join(
@@ -1547,7 +1799,10 @@ def gerar_html(contas: list) -> str:
         f"{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m-1]}/{a}"
         for (a, m) in meses_dinamicos
     ]
-    dre_resumo_json = jsonlib.dumps(montar_resumo_dre(linhas_dre_calc, nomes_meses_insights), ensure_ascii=False)
+    dre_resumo_json = jsonlib.dumps(
+        montar_resumo_dre(linhas_dre_calc, nomes_meses_insights, meses_dinamicos, MANUAL_FATURAMENTO_KIT),
+        ensure_ascii=False,
+    )
 
     diretorio_script = os.path.dirname(os.path.abspath(__file__))
     classificacao_custos_json = jsonlib.dumps(carregar_classificacao_custos(diretorio_script), ensure_ascii=False)
@@ -2028,6 +2283,7 @@ def gerar_html(contas: list) -> str:
 <script>
 const DADOS = {dados_json};
 const DRE_DE_PARA = {de_para_json};
+const CLASSIFICACAO_CUSTOS_LANC = {classificacao_custos_json};
 
 // ---- Drill-down DRE/DFC: clique numa célula de valor (Jul/2026 em diante,
 // só nas linhas ligadas a UMA categoria da Omie) pra ver os lançamentos que
@@ -2109,6 +2365,40 @@ function fecharDrillDownDreDfc() {{
 
 // Definição das colunas da tabela, usadas tanto para montar o cabeçalho
 // quanto para o filtro estilo Excel de cada coluna.
+// ---- Classificação Custo Fixo/Variável, usada na coluna da tabela de
+// Lançamentos. Duplicada (não reaproveitada) da mesma lógica usada na aba
+// Insights porque aquele bloco de script só é carregado mais adiante na
+// página -- copiamos aqui a parte mínima necessária (normalizar nome de
+// categoria + procurar nas 3 listas do classificacao_custos.json).
+function lancNormalizarCategoria(categoria) {{
+  if (!categoria) return '-';
+  let c = String(categoria).trim();
+  c = c.replace(/\\s*\\([\\d.,]+\\s*%\\)/g, '');
+  c = c.replace(/\\s*\\(inativ[ao]\\)/gi, '');
+  c = c.replace(/\\s{{2,}}/g, ' ').replace(/\\s*,\\s*,/g, ',').replace(/^\\s*,\\s*|\\s*,\\s*$/g, '');
+  return c.trim() || '-';
+}}
+const LANC_CONJUNTO_FIXO = new Set((CLASSIFICACAO_CUSTOS_LANC.fixo || []).map(c => lancNormalizarCategoria(c).toLowerCase()));
+const LANC_CONJUNTO_VARIAVEL = new Set((CLASSIFICACAO_CUSTOS_LANC.variavel || []).map(c => lancNormalizarCategoria(c).toLowerCase()));
+const LANC_CONJUNTO_IGNORAR = new Set((CLASSIFICACAO_CUSTOS_LANC.ignorar || []).map(c => lancNormalizarCategoria(c).toLowerCase()));
+
+function lancClassificarCusto(l) {{
+  // Só faz sentido classificar SAÍDAS (despesas) -- entradas (receita) não
+  // são "custo fixo" nem "variável".
+  if (l.valor >= 0) return '-';
+  // A Omie às vezes junta categorias no mesmo lançamento, separadas por
+  // "; " (ex: "Insumos para Obras; Material de Escritório"). Pra uma
+  // única célula da tabela, classificamos pela primeira categoria da
+  // lista -- é uma simplificação da mesma regra usada (com rateio) na
+  // aba Insights, mas suficiente pra filtrar/visualizar na tabela.
+  const partes = lancNormalizarCategoria(l.categoria).split(';').map(p => p.trim()).filter(Boolean);
+  const primeira = (partes[0] || '-').toLowerCase();
+  if (LANC_CONJUNTO_FIXO.has(primeira)) return 'Custo Fixo';
+  if (LANC_CONJUNTO_VARIAVEL.has(primeira)) return 'Custo Variável';
+  if (LANC_CONJUNTO_IGNORAR.has(primeira)) return 'Ignorado';
+  return 'Não Classificado';
+}}
+
 const COLUNAS = [
   {{ key: 'situacaoTitulo', label: 'Situação', get: l => l.situacaoTitulo }},
   {{ key: 'data', label: 'Data Previsão/Pagamento', get: l => l.data }},
@@ -2117,6 +2407,7 @@ const COLUNAS = [
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
   {{ key: 'categoria', label: 'Categoria', get: l => l.categoria }},
   {{ key: 'departamento', label: 'Departamento', get: l => l.departamento }},
+  {{ key: 'custoFixoVariavel', label: 'Custo Fixo/Variável', get: l => lancClassificarCusto(l) }},
   {{ key: 'conta', label: 'Banco/Cartão', get: l => l.contaNome }},
   {{ key: 'observacao', label: 'Observação', get: l => l.observacao }},
   {{ key: 'dataConciliacao', label: 'Data Conciliação', get: l => l.dataConciliacao || '-' }},
@@ -2134,7 +2425,7 @@ let baseFiltradosGlobal = [];
 let colWidths = {{}};
 const LARGURA_PADRAO = {{
   situacaoTitulo: 130, conta: 150, empresa: 160, data: 150, cliente: 200, valor: 110, categoria: 160,
-  observacao: 240, dataConciliacao: 150,
+  observacao: 240, dataConciliacao: 150, custoFixoVariavel: 150,
 }};
 let resizando = null;
 
