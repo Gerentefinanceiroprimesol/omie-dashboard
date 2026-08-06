@@ -1431,7 +1431,9 @@ DRE_LINHAS = [{'linha': 2,
               'Abr': -32725.138210070007,
               'Mai': -33605.092819186,
               'Jun': -34844.66420226399},
-  'classif': {'tipo': 'manual_faturamento_kit'}},
+  'classif': {'tipo': 'omie_categoria',
+              'categoria': 'Comissões Internas',
+              'competencia': 'Mês Anterior'}},
  {'linha': 152,
   'label': 'Comissões Externas',
   'valores': {'Jan': -51948.74864868002,
@@ -1440,7 +1442,9 @@ DRE_LINHAS = [{'linha': 2,
               'Abr': -88382.32761922003,
               'Mai': -58385.1934842,
               'Jun': -69663.99197172},
-  'classif': {'tipo': 'manual_faturamento_kit'}},
+  'classif': {'tipo': 'omie_categoria',
+              'categoria': 'Comissões Externas',
+              'competencia': 'Mês Anterior'}},
  {'linha': 153,
   'label': 'Ajuda de Custo - Comercial',
   'valores': {'Jan': -5923,
@@ -3217,6 +3221,16 @@ JUROS_EMPRESTIMOS = {'2024-11': 14600.14963815221,
 # Preencha aqui os valores mensais que nao vem da Omie (Fabricio informa
 # todo mes). Chave: "YYYY-MM". Dentro de cada mes, chave = numero da linha
 # (o mesmo "linha" que aparece em DRE_LINHAS/DFC_LINHAS), valor = numero.
-MANUAL_FATURAMENTO_KIT = {}   # linhas DRE 7, 21, 22, 151, 152 (Receita e comissoes)
+MANUAL_FATURAMENTO_KIT = {
+    '2026-07': {
+        7: 2827381.38,    # Receita - soma da coluna "VALOR DE VENDA" (faturamento_julho.xlsx)
+        21: -269687.75,   # Descontos - soma da coluna "DESCONTO"
+        22: -44072.88,    # Descontos Cartão - soma da coluna "DESC CARTÃO"
+        'numero_vendas': 98,  # nº de linhas preenchidas na planilha -- usado no card de Ticket Médio (Insights)
+        # 151/152 (Comissões Internas/Externas) NÃO entram mais aqui:
+        # agora vêm automaticamente da Omie (ver DRE_LINHAS linha 151/152,
+        # tipo 'omie_categoria' com competência 'Mês Anterior')
+    },
+}   # linhas DRE 7, 21, 22 (Receita e descontos) — Comissoes (151/152) agora automaticas
 MANUAL_FOLHA = {}             # ~29 linhas de folha (salarios, FGTS, ferias etc.)
 MANUAL_WEG = {}               # linha DFC 15 ("Pagamento Clientes para WEG")
