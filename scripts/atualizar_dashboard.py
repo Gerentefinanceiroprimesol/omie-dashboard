@@ -178,6 +178,13 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-down { color: var(--red); }
   #abaInsights .ins-neutro { color: var(--text-faint); }
 
+  #abaInsights .ins-card-expandivel { cursor: pointer; transition: border-color 0.15s; }
+  #abaInsights .ins-card-expandivel:hover { border-color: var(--laranja); }
+  #abaInsights .ins-expandir-seta { display: inline-block; font-size: 9px; transition: transform 0.2s; color: var(--text-faint); }
+  #abaInsights .ins-card-expandivel.aberto .ins-expandir-seta { transform: rotate(180deg); }
+  #abaInsights .ins-expandivel-corpo { display: none; margin-top: 10px; cursor: default; max-height: 220px; overflow-y: auto; }
+  #abaInsights .ins-card-expandivel.aberto .ins-expandivel-corpo { display: block; }
+
   #abaInsights .ins-clickable { cursor: pointer; position: relative; transition: border-color .15s, background .15s; }
   #abaInsights .ins-clickable:hover { border-color: var(--laranja); background: #1c2841; }
   #abaInsights .ins-clickable::after {
@@ -280,6 +287,14 @@ function insFmtPct(v, casas) {
 function insClasseVariacao(v) {
   if (v === null || v === undefined) return 'ins-neutro';
   return v > 0 ? 'ins-up' : (v < 0 ? 'ins-down' : 'ins-neutro');
+}
+
+// Abre/fecha a tabela mês a mês escondida dentro de um card (Ticket Médio,
+// Comissão sobre a Receita). "cardEl" é o próprio card clicado -- alterna
+// a classe "aberto" nele, que o CSS usa pra mostrar/esconder o
+// ".ins-expandivel-corpo" e girar a setinha.
+function insToggleExpandivel(cardEl) {
+  cardEl.classList.toggle('aberto');
 }
 
 function insIndiceMesAtual() {
@@ -1077,18 +1092,55 @@ function renderizarInsights() {
   // junto com o faturamento (não dá pra derivar isso com segurança dos
   // lançamentos bancários da Omie, porque uma venda parcelada gera vários
   // lançamentos -- contar lançamentos infla o número de "vendas" e
-  // subestima o ticket médio).
-  const numeroVendasAtual = DRE_RESUMO.numeroVendas[idxAtual];
-  const ticketMedio = (receitaAtualInd !== null && numeroVendasAtual) ? (receitaAtualInd / numeroVendasAtual) : null;
+  // subestima o ticket médio). Montamos a série mês a mês (usada tanto
+  // pro card fechado -- que mostra a média -- quanto pra tabela que abre
+  // ao clicar).
+  function insTicketMedioMensal() {
+    return insListaMesesAteAtual().map(function (m) {
+      const receita = DRE_RESUMO.receitaBruta[m.indice];
+      const vendas = DRE_RESUMO.numeroVendas[m.indice];
+      const valor = (receita !== null && receita !== undefined && vendas) ? (receita / vendas) : null;
+      return { nome: m.nome, indice: m.indice, valor: valor, receita: receita, vendas: vendas };
+    });
+  }
+  const ticketMedioSerie = insTicketMedioMensal();
+  const ticketMedioValidos = ticketMedioSerie.filter(function (t) { return t.valor !== null; });
+  // Média simples do card fechado: média dos meses que têm nº de vendas informado.
+  const ticketMedioMedia = ticketMedioValidos.length > 0
+    ? ticketMedioValidos.reduce(function (s, t) { return s + t.valor; }, 0) / ticketMedioValidos.length
+    : null;
+  // "Total do período" da tabela expandida: soma da receita de TODOS os
+  // meses com nº de vendas informado ÷ soma do nº de vendas desses meses
+  // -- um ticket médio "combinado" do período, matematicamente correto
+  // (não é a mesma coisa que somar as médias mensais, que não faria
+  // sentido pra esse tipo de indicador).
+  const ticketMedioSomaReceita = ticketMedioValidos.reduce(function (s, t) { return s + t.receita; }, 0);
+  const ticketMedioSomaVendas = ticketMedioValidos.reduce(function (s, t) { return s + t.vendas; }, 0);
+  const ticketMedioPeriodo = ticketMedioSomaVendas > 0 ? (ticketMedioSomaReceita / ticketMedioSomaVendas) : null;
 
   // Comissão como % da Receita (Internas + Externas, ambas já automáticas
-  // via Omie -- ver DRE_LINHAS 151/152).
-  const comIntAtual = DRE_RESUMO.comissoesInternas[idxAtual];
-  const comExtAtual = DRE_RESUMO.comissoesExternas[idxAtual];
-  const comissaoTotalAtual = (comIntAtual !== null || comExtAtual !== null)
-    ? (Math.abs(comIntAtual || 0) + Math.abs(comExtAtual || 0)) : null;
-  const comissaoPctReceita = (comissaoTotalAtual !== null && receitaAtualInd)
-    ? (comissaoTotalAtual / receitaAtualInd * 100) : null;
+  // via Omie -- ver DRE_LINHAS 151/152). Mesma lógica de série mês a mês.
+  function insComissaoMensal() {
+    return insListaMesesAteAtual().map(function (m) {
+      const receita = DRE_RESUMO.receitaBruta[m.indice];
+      const comInt = DRE_RESUMO.comissoesInternas[m.indice];
+      const comExt = DRE_RESUMO.comissoesExternas[m.indice];
+      const comissaoTotal = (comInt !== null || comExt !== null) ? (Math.abs(comInt || 0) + Math.abs(comExt || 0)) : null;
+      const pct = (comissaoTotal !== null && receita) ? (comissaoTotal / receita * 100) : null;
+      return { nome: m.nome, indice: m.indice, pct: pct, comissaoTotal: comissaoTotal, receita: receita };
+    });
+  }
+  const comissaoSerie = insComissaoMensal();
+  const comissaoValidos = comissaoSerie.filter(function (c) { return c.pct !== null; });
+  const comissaoMedia = comissaoValidos.length > 0
+    ? comissaoValidos.reduce(function (s, c) { return s + c.pct; }, 0) / comissaoValidos.length
+    : null;
+  // Mesmo raciocínio do ticket médio: "Total do período" = soma da
+  // comissão em R$ ÷ soma da receita em R$ (não soma das porcentagens
+  // mensais, que não teria significado nenhum).
+  const comissaoSomaTotal = comissaoValidos.reduce(function (s, c) { return s + c.comissaoTotal; }, 0);
+  const comissaoSomaReceita = comissaoValidos.reduce(function (s, c) { return s + c.receita; }, 0);
+  const comissaoPctPeriodo = comissaoSomaReceita > 0 ? (comissaoSomaTotal / comissaoSomaReceita * 100) : null;
 
   // Capital de Giro = Caixa (saldo bancário real, sem cartão) + A Receber
   // (próximos dias configurados) − A Pagar (mesmo período). É uma foto do
@@ -1102,14 +1154,34 @@ function renderizarInsights() {
     if (v !== null && v !== undefined) { ebitdaYtd += v; mesesComEbitda++; }
   }
 
-  const indicadoresHtml = '<div class="ins-grid">' +
-    '<div class="ins-card"><div class="ins-kpi-label">Ticket Médio de Venda (' + nomeMesAtual + ')</div>' +
-    '<div class="ins-kpi-value">' + (ticketMedio !== null ? fmtMoeda(ticketMedio) : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (numeroVendasAtual ? numeroVendasAtual + ' venda(s) no mês' : 'informe o nº de vendas do mês pra calcular') + '</div></div>' +
+  const linhasTicketMedio = ticketMedioSerie.map(function (t) {
+    return '<tr><td>' + t.nome + '</td><td>' + (t.valor !== null ? fmtMoeda(t.valor) : '—') + '</td></tr>';
+  }).join('') +
+    '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
+    (ticketMedioPeriodo !== null ? fmtMoeda(ticketMedioPeriodo) : '—') + '</td></tr>';
 
-    '<div class="ins-card"><div class="ins-kpi-label">Comissão sobre a Receita (' + nomeMesAtual + ')</div>' +
-    '<div class="ins-kpi-value">' + (comissaoPctReceita !== null ? comissaoPctReceita.toFixed(1) + '%' : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (comissaoTotalAtual !== null ? fmtMoeda(comissaoTotalAtual) + ' em comissões' : 'sem dado de comissão') + '</div></div>' +
+  const linhasComissao = comissaoSerie.map(function (c) {
+    return '<tr><td>' + c.nome + '</td><td>' + (c.pct !== null ? c.pct.toFixed(1) + '%' : '—') + '</td></tr>';
+  }).join('') +
+    '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
+    (comissaoPctPeriodo !== null ? comissaoPctPeriodo.toFixed(1) + '%' : '—') + '</td></tr>';
+
+  const indicadoresHtml = '<div class="ins-grid">' +
+    '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
+    '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
+    '<div class="ins-kpi-value">' + (ticketMedioMedia !== null ? fmtMoeda(ticketMedioMedia) : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + '</div>' +
+    '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ticket Médio</th></tr></thead><tbody>' + linhasTicketMedio + '</tbody></table>' +
+    '</div></div>' +
+
+    '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
+    '<div class="ins-kpi-label">Comissão sobre a Receita (Média) <span class="ins-expandir-seta">▾</span></div>' +
+    '<div class="ins-kpi-value">' + (comissaoMedia !== null ? comissaoMedia.toFixed(1) + '%' : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (comissaoValidos.length > 0 ? 'média de ' + comissaoValidos.length + ' mês(es)' : 'sem dado de comissão') + '</div>' +
+    '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasComissao + '</tbody></table>' +
+    '</div></div>' +
 
     '<div class="ins-card"><div class="ins-kpi-label">Capital de Giro (hoje)</div>' +
     '<div class="ins-kpi-value ' + insClasseVariacao(capitalDeGiro) + '">' + fmtMoeda(capitalDeGiro) + '</div>' +
@@ -1566,18 +1638,24 @@ def coletar_dados() -> list:
                 if (m.get("cDesCliente") or "").strip() in ("SALDO", "SALDO ANTERIOR"):
                     continue
 
-                # Previsão de Ordem de Serviço ainda NÃO faturada (cOrigem
-                # começa com "Previsão de O.S.") não é um compromisso
-                # financeiro real ainda -- é só uma projeção de faturamento
-                # futuro que nem virou título de Contas a Pagar/Receber.
-                # Diferente de uma previsão de verdade (título formal já
-                # emitido, só ainda não pago -- cOrigem "Conta a Pagar"/
-                # "Conta a Receber", cSituacao "Previsto"), essas O.S. não
-                # têm nada por trás ainda, então tiramos elas da base
-                # inteira em vez de tentar mostrar uma Situação pra elas
-                # (confirmado com um caso real: Rosemiro Azevedo da Cruz,
-                # 25/05/2026, cOrigem "Previsão de O.S. MATRIZ").
-                if (m.get("cOrigem") or "").strip().lower().startswith("previsão de o.s"):
+                # Previsão de faturamento que ainda NÃO virou título formal
+                # (Ordem de Serviço não faturada, Pedido de Venda não
+                # faturado, etc.) não é um compromisso financeiro real ainda
+                # -- é só uma projeção. A Omie identifica isso no cOrigem,
+                # sempre no formato "Previsão de <tipo>" (ex: "Previsão de
+                # O.S. MATRIZ", "Previsão de Pedido de Venda"). Diferente de
+                # uma previsão de verdade (título formal já emitido, só
+                # ainda não pago -- cOrigem "Conta a Pagar"/"Conta a
+                # Receber", que continua aparecendo normalmente), essas não
+                # têm título nenhum por trás ainda, então tiramos elas da
+                # base inteira em vez de tentar mostrar uma Situação pra
+                # elas. Usamos o prefixo genérico "previsão de" (em vez de
+                # travar só em "o.s.") pra pegar qualquer variação desse
+                # tipo de documento que a Omie use, sem precisar caçar cada
+                # uma manualmente (confirmado com dois casos reais: Rosemiro
+                # Azevedo da Cruz — "Previsão de O.S. MATRIZ" — e Anderson
+                # de Jesus Silva — "Previsão de Pedido de Venda").
+                if (m.get("cOrigem") or "").strip().lower().startswith("previsão de"):
                     continue
 
                 cod_mov = m.get("nCodLancamento") or m.get("nCodLancRelac")
@@ -1995,7 +2073,7 @@ def gerar_html(contas: list) -> str:
     white-space: nowrap; table-layout: auto;
   }}
   .dre-dfc-tabela th {{
-    background: var(--bg-header); text-align: right; padding: 8px 10px; font-size: 10.5px;
+    background: var(--bg-panel); text-align: right; padding: 8px 10px; font-size: 10.5px;
     text-transform: uppercase; color: var(--text-faint); position: sticky; top: 0;
   }}
   .dre-dfc-tabela th:first-child {{ text-align: left; position: sticky; left: 0; z-index: 2; }}
