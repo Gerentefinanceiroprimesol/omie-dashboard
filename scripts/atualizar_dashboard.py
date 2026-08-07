@@ -23,7 +23,8 @@ import time
 from datetime import datetime, timezone, timedelta
 import requests
 
-from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, DE_PARA
+from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, DE_PARA, \
+    MANUAL_FATURAMENTO_POR_EMPRESA
 from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela
 # =============================================================
 # Bloco abaixo: lógica da aba Insights (Custo Fixo/Variável, resumo
@@ -120,8 +121,9 @@ def montar_resumo_dre(linhas_dre: list, nomes_meses: list, meses_dinamicos: list
     }
 
 
-def montar_html_insights(dre_resumo_json: str, classificacao_custos_json: str, insights_config_json: str) -> str:
-    """Monta o HTML+JS completo da aba Insights, injetando os 3 blocos de
+def montar_html_insights(dre_resumo_json: str, classificacao_custos_json: str, insights_config_json: str,
+                          faturamento_por_empresa_json: str) -> str:
+    """Monta o HTML+JS completo da aba Insights, injetando os blocos de
     dados (JSON) nos pontos marcados por placeholders. Usa .replace() (não
     f-string/.format()) de propósito, para não precisar escapar as chaves
     { } do JavaScript abaixo."""
@@ -129,6 +131,7 @@ def montar_html_insights(dre_resumo_json: str, classificacao_custos_json: str, i
     html = html.replace("__DRE_RESUMO_JSON__", dre_resumo_json)
     html = html.replace("__CLASSIFICACAO_JSON__", classificacao_custos_json)
     html = html.replace("__INSIGHTS_CONFIG_JSON__", insights_config_json)
+    html = html.replace("__FATURAMENTO_POR_EMPRESA_JSON__", faturamento_por_empresa_json)
     return html
 
 
@@ -218,6 +221,15 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-rentab-table td { padding: 7px 10px; }
   #abaInsights .ins-rentab-table tbody tr:hover td { background: rgba(250,168,33,0.05); }
 
+  #abaInsights .ins-card-largo { margin-top: 14px; }
+  #abaInsights .ins-tabela-scroll { overflow-x: auto; }
+  #abaInsights .ins-tabela-empresas { font-size: 12.5px; min-width: 640px; }
+  #abaInsights .ins-tabela-empresas th { padding: 7px 10px; white-space: nowrap; }
+  #abaInsights .ins-tabela-empresas td { padding: 7px 10px; }
+  #abaInsights .ins-tabela-empresas tbody tr:hover td { background: rgba(250,168,33,0.05); }
+  #abaInsights .ins-tabela-empresas td:last-child, #abaInsights .ins-tabela-empresas th:last-child { border-left: 1px solid var(--border); }
+  #abaInsights .ins-nota-rodape { font-size: 10.5px; color: var(--text-faint); margin-top: 8px; }
+
   #abaInsights .ins-status-ok { color: var(--green); font-weight: 700; font-size: 10.5px; }
   #abaInsights .ins-status-bad { color: var(--red); font-weight: 700; font-size: 10.5px; }
 
@@ -267,6 +279,7 @@ INSIGHTS_HTML_TEMPLATE = r"""
 const DRE_RESUMO = __DRE_RESUMO_JSON__;
 const CLASSIFICACAO_CUSTOS = __CLASSIFICACAO_JSON__;
 const INSIGHTS_CONFIG = __INSIGHTS_CONFIG_JSON__;
+const FATURAMENTO_POR_EMPRESA_KIT = __FATURAMENTO_POR_EMPRESA_JSON__;
 
 function toggleDetalheInsight(id) {
   const el = document.getElementById(id);
@@ -557,6 +570,76 @@ function insFaturamentoMensal() {
   return meses.map(function (m) {
     const valor = DRE_RESUMO.receitaBruta[m.indice];
     return { nome: m.nome, indice: m.indice, valor: (valor === null || valor === undefined) ? null : valor };
+  });
+}
+
+// ---- Faturamento por Empresa ----
+// Prime Sol Matriz / Lagos / Cabo Frio: o Kit (maior parte da receita) não
+// tem título/categoria própria por empresa na Omie -- vem de um número
+// manual único consolidado (MANUAL_FATURAMENTO_KIT). Pra quebrar por
+// empresa, usamos FATURAMENTO_POR_EMPRESA_KIT, que o Fabrício confirmou
+// vir das planilhas mensais de faturamento (coluna "LOJA"), em 06/08/2026.
+//
+// PS Energia é diferente: as vendas dela já são 100% automáticas via Omie
+// (não passa pela planilha de Kit), então calculamos direto dos
+// lançamentos, com a mesma regra de categoria/competência que a DRE usa
+// pras linhas 8-14 (Receita Operacional Bruta, exceto o Kit em si).
+const REVENUE_CATEGORIAS_MENORES = [
+  { categoria: 'serviços de engenharia - avulso', competencia: 'Mesmo Mês' },
+  { categoria: 'carregador elétrico', competencia: 'Mesmo Mês' },
+  { categoria: 'ar condicionado', competencia: 'Mesmo Mês' },
+  { categoria: 'ps energia', competencia: 'Não se Aplica' },
+  { categoria: 'comissão seguro', competencia: 'Mesmo Mês' },
+  { categoria: 'receitas com publicidade e propaganda', competencia: 'Mesmo Mês' },
+  { categoria: 'reembolso', competencia: 'Mês Anterior' },
+];
+
+function insMesEfetivoGenerico(dataBr, competencia) {
+  const iso = paraDataISO(dataBr);
+  if (!iso) return null;
+  let partes = iso.split('-').map(Number);
+  let ano = partes[0], mes = partes[1];
+  if (competencia === 'Mês Anterior') {
+    mes -= 1;
+    if (mes === 0) { mes = 12; ano -= 1; }
+  }
+  return { ano: ano, mes: mes };
+}
+
+function insFaturamentoPSEnergiaPorMes(ano, mes) {
+  const todos = insTodosLancamentos();
+  let total = 0;
+  todos.forEach(function (l) {
+    if (l.empresaNome !== 'PS Energia') return;
+    const catNorm = insNormalizarCategoria(l.categoria).toLowerCase();
+    const config = REVENUE_CATEGORIAS_MENORES.find(function (c) { return c.categoria === catNorm; });
+    if (!config) return;
+    const eff = insMesEfetivoGenerico(l.data, config.competencia);
+    if (eff && eff.ano === ano && eff.mes === mes) total += (l.valor || 0);
+  });
+  return total;
+}
+
+function insFaturamentoPorEmpresa() {
+  const meses = insListaMesesAteAtual();
+  return meses.map(function (m) {
+    const am = insAnoMesPorIndice(m.indice);
+    const chave = insChaveMes(am.ano, am.mes);
+    const doMesEmpresa = FATURAMENTO_POR_EMPRESA_KIT[chave];
+    const psEnergia = insFaturamentoPSEnergiaPorMes(am.ano, am.mes);
+    const matriz = doMesEmpresa ? (doMesEmpresa['Prime Sol Matriz'] || 0) : null;
+    const lagos = doMesEmpresa ? (doMesEmpresa['Prime Sol Lagos'] || 0) : null;
+    const caboFrio = doMesEmpresa ? (doMesEmpresa['Prime Sol Cabo Frio'] || 0) : null;
+    // O "Total" da linha usa sempre o número oficial da DRE (o mesmo do
+    // gráfico de Faturamento Mensal acima) -- NÃO é a soma das 4 colunas.
+    // Isso importa em meses sem planilha por empresa ainda informada: as
+    // colunas de empresa ficam com "—", mas o Total continua batendo com o
+    // valor real e completo (inclui o Kit consolidado), em vez de mostrar
+    // um total artificialmente baixo (só o que desse pra quebrar por
+    // empresa naquele mês).
+    const totalOficial = DRE_RESUMO.receitaBruta[m.indice];
+    const total = (totalOficial === null || totalOficial === undefined) ? null : totalOficial;
+    return { nome: m.nome, indice: m.indice, matriz: matriz, lagos: lagos, caboFrio: caboFrio, psEnergia: psEnergia, total: total, temPlanilha: !!doMesEmpresa };
   });
 }
 
@@ -972,7 +1055,7 @@ function renderizarInsights() {
 
   const faturamentoChartHtml = (function () {
     const largura = 640, altura = 220;
-    const margemEsq = 54, margemDir = 16, margemTopo = 18, margemBaixo = 30;
+    const margemEsq = 54, margemDir = 34, margemTopo = 34, margemBaixo = 30;
     const areaLargura = largura - margemEsq - margemDir;
     const areaAltura = altura - margemTopo - margemBaixo;
     const n = faturamentoSerie.length;
@@ -1032,9 +1115,19 @@ function renderizarInsights() {
       const ehUltimo = i === faturamentoSerie.length - 1;
       const classe = ehUltimo ? 'ins-linechart-ponto ins-linechart-ponto-atual' : 'ins-linechart-ponto';
       const raio = ehUltimo ? 5 : 3.5;
-      const rotuloValor = ehUltimo
-        ? '<text x="' + x(i) + '" y="' + (y(f.valor || 0) - 12) + '" text-anchor="middle" class="ins-linechart-valor-atual">' + fmtMoeda(f.valor || 0) + '</text>'
-        : '';
+      let rotuloValor = '';
+      if (ehUltimo) {
+        // O último ponto costuma cair perto da borda direita do gráfico --
+        // com o texto centralizado (text-anchor="middle") a metade direita
+        // do valor acabava cortada pra fora do viewBox. Ancorando pelo
+        // final ("end") e recuando um pouco do ponto, o texto sempre cresce
+        // pra ESQUERDA, nunca estoura a borda direita, não importa o mês.
+        const px = x(i), py = y(f.valor || 0);
+        const ehPrimeiroOuUnico = n <= 1;
+        const ancora = ehPrimeiroOuUnico ? 'middle' : 'end';
+        const tx = ehPrimeiroOuUnico ? px : px + raio + 6;
+        rotuloValor = '<text x="' + tx + '" y="' + (py - 14) + '" text-anchor="' + ancora + '" class="ins-linechart-valor-atual">' + fmtMoeda(f.valor || 0) + '</text>';
+      }
       return '<circle cx="' + x(i) + '" cy="' + y(f.valor || 0) + '" r="' + raio + '" class="' + classe + '">' +
         '<title>' + f.nome + ': ' + fmtMoeda(f.valor || 0) + '</title></circle>' + rotuloValor;
     }).join('');
@@ -1043,45 +1136,82 @@ function renderizarInsights() {
     }).join('');
 
     return '<svg viewBox="0 0 ' + largura + ' ' + altura + '" class="ins-linechart-svg" preserveAspectRatio="none">' +
-      '<defs><linearGradient id="insFaturamentoGradiente" x1="0" y1="0" x2="0" y2="1">' +
+      '<defs>' +
+      '<linearGradient id="insFaturamentoGradiente" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0%" stop-color="var(--laranja)" stop-opacity="0.38" />' +
       '<stop offset="100%" stop-color="var(--laranja)" stop-opacity="0" />' +
-      '</linearGradient></defs>' +
+      '</linearGradient>' +
+      '<filter id="insFaturamentoSombra" x="-20%" y="-20%" width="140%" height="140%">' +
+      '<feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.35" />' +
+      '</filter>' +
+      '</defs>' +
       linhasGrade +
       '<path d="' + caminhoArea + '" class="ins-linechart-area" />' +
-      '<path d="' + caminhoLinha + '" class="ins-linechart-linha" />' +
+      '<path d="' + caminhoLinha + '" class="ins-linechart-linha" filter="url(#insFaturamentoSombra)" />' +
       circulos + rotulosX +
       '</svg>';
   })();
 
   // Média simples: soma dos meses disponíveis ÷ quantidade de meses (mesmo
-  // critério usado nas tabelas de Custo Fixo/Variável).
-  const somaFaturamento = valoresFaturamento.reduce(function (a, b) { return a + b; }, 0);
-  const mediaFaturamento = faturamentoSerie.length > 0 ? somaFaturamento / faturamentoSerie.length : 0;
+  // critério usado nas tabelas de Custo Fixo/Variável -- agora incorporado
+  // direto na tabela "Faturamento por Empresa" abaixo, coluna Total).
 
-  // Total acumulado até o mês ANTERIOR ao último da série -- ou seja, soma
-  // de todos os meses exceto o mais recente (que normalmente ainda está
-  // "fresco"/em fechamento). Se só existir 1 mês na série, não há "mês
-  // anterior" pra somar.
-  const mesesAteAnterior = faturamentoSerie.slice(0, -1);
-  const somaAteMesAnterior = mesesAteAnterior.reduce(function (s, f) { return s + (f.valor || 0); }, 0);
-  const rotuloTotalAnterior = mesesAteAnterior.length > 0
-    ? 'Total até ' + mesesAteAnterior[mesesAteAnterior.length - 1].nome
-    : 'Total até o mês anterior';
+  // ---- Faturamento por Empresa ----
+  const faturamentoPorEmpresaSerie = insFaturamentoPorEmpresa();
 
-  const linhasTabelaFaturamento = faturamentoSerie.map(function (f) {
-    return '<tr><td>' + f.nome + '</td><td>' + (f.valor !== null ? fmtMoeda(f.valor) : '—') + '</td></tr>';
+  function insMediaOuNull(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) / validos.length : null;
+  }
+  function insSomaOuNull(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) : null;
+  }
+  function celEmpresa(v) {
+    return (v !== null && v !== undefined) ? fmtMoeda(v) : '—';
+  }
+
+  const somaMatriz = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
+  const somaLagos = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
+  const somaCaboFrio = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
+  const somaPSEnergia = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
+  const somaTotalEmpresas = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
+
+  const mediaMatriz = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
+  const mediaLagos = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
+  const mediaCaboFrio = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
+  const mediaPSEnergia = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
+  const mediaTotalEmpresas = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
+
+  const rotuloTotalEmpresas = faturamentoPorEmpresaSerie.length > 0
+    ? 'Total até ' + faturamentoPorEmpresaSerie[faturamentoPorEmpresaSerie.length - 1].nome
+    : 'Total';
+
+  const linhasFaturamentoPorEmpresa = faturamentoPorEmpresaSerie.map(function (f) {
+    return '<tr><td>' + f.nome + '</td><td>' + celEmpresa(f.matriz) + '</td><td>' + celEmpresa(f.lagos) + '</td><td>' +
+      celEmpresa(f.caboFrio) + '</td><td>' + celEmpresa(f.psEnergia) + '</td><td><strong>' + celEmpresa(f.total) + '</strong></td></tr>';
   }).join('') +
-    (mesesAteAnterior.length > 0
-      ? '<tr style="border-top:2px solid var(--border)"><td>' + rotuloTotalAnterior + '</td><td>' + fmtMoeda(somaAteMesAnterior) + '</td></tr>'
-      : '') +
-    '<tr' + (mesesAteAnterior.length > 0 ? '' : ' style="border-top:2px solid var(--border)"') + '><td>Média</td><td>' + fmtMoeda(mediaFaturamento) + '</td></tr>';
+    '<tr style="border-top:2px solid var(--border)"><td>' + rotuloTotalEmpresas + '</td><td>' + celEmpresa(somaMatriz) + '</td><td>' +
+    celEmpresa(somaLagos) + '</td><td>' + celEmpresa(somaCaboFrio) + '</td><td>' + celEmpresa(somaPSEnergia) + '</td><td><strong>' + celEmpresa(somaTotalEmpresas) + '</strong></td></tr>' +
+    '<tr><td>Média</td><td>' + celEmpresa(mediaMatriz) + '</td><td>' + celEmpresa(mediaLagos) + '</td><td>' +
+    celEmpresa(mediaCaboFrio) + '</td><td>' + celEmpresa(mediaPSEnergia) + '</td><td><strong>' + celEmpresa(mediaTotalEmpresas) + '</strong></td></tr>';
 
-  const faturamentoHtml = '<div class="ins-grid ins-grid-2">' +
-    '<div class="ins-card">' + faturamentoChartHtml + '</div>' +
-    '<div class="ins-card"><div class="ins-kpi-label">Faturamento Mensal (Receita Operacional Bruta)</div>' +
-    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasTabelaFaturamento + '</tbody></table></div>' +
+  const temMesSemPlanilha = faturamentoPorEmpresaSerie.some(function (f) { return !f.temPlanilha; });
+
+  const faturamentoPorEmpresaHtml = '<div class="ins-card ins-card-largo">' +
+    '<div class="ins-kpi-label">Faturamento por Empresa</div>' +
+    '<div class="ins-tabela-scroll">' +
+    '<table class="ins-mini-table ins-tabela-empresas"><thead><tr>' +
+    '<th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>PS Energia</th><th>Total</th>' +
+    '</tr></thead><tbody>' + linhasFaturamentoPorEmpresa + '</tbody></table>' +
+    '</div>' +
+    (temMesSemPlanilha
+      ? '<div class="ins-nota-rodape">* Prime Sol Matriz/Lagos/Cabo Frio ficam em "—" nos meses em que a planilha mensal de faturamento por loja ainda não foi informada. PS Energia é sempre automático (Omie), não depende de planilha.</div>'
+      : '') +
     '</div>';
+
+  const faturamentoHtml = '<div class="ins-card">' + faturamentoChartHtml + '</div>' +
+    faturamentoPorEmpresaHtml;
 
   // ---- Indicadores adicionais: Ticket Médio, Comissão % Receita,
   // Capital de Giro, EBITDA Acumulado (YTD) ----
@@ -1154,11 +1284,17 @@ function renderizarInsights() {
     if (v !== null && v !== undefined) { ebitdaYtd += v; mesesComEbitda++; }
   }
 
+  // Média simples do nº de vendas/mês, pro card fechado.
+  const numeroVendasMedia = ticketMedioValidos.length > 0
+    ? ticketMedioValidos.reduce(function (s, t) { return s + t.vendas; }, 0) / ticketMedioValidos.length
+    : null;
+
   const linhasTicketMedio = ticketMedioSerie.map(function (t) {
-    return '<tr><td>' + t.nome + '</td><td>' + (t.valor !== null ? fmtMoeda(t.valor) : '—') + '</td></tr>';
+    return '<tr><td>' + t.nome + '</td><td>' + (t.valor !== null ? fmtMoeda(t.valor) : '—') + '</td><td>' + (t.vendas ? t.vendas : '—') + '</td></tr>';
   }).join('') +
     '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
-    (ticketMedioPeriodo !== null ? fmtMoeda(ticketMedioPeriodo) : '—') + '</td></tr>';
+    (ticketMedioPeriodo !== null ? fmtMoeda(ticketMedioPeriodo) : '—') + '</td><td>' +
+    (ticketMedioSomaVendas > 0 ? ticketMedioSomaVendas : '—') + '</td></tr>';
 
   const linhasComissao = comissaoSerie.map(function (c) {
     return '<tr><td>' + c.nome + '</td><td>' + (c.pct !== null ? c.pct.toFixed(1) + '%' : '—') + '</td></tr>';
@@ -1170,9 +1306,9 @@ function renderizarInsights() {
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (ticketMedioMedia !== null ? fmtMoeda(ticketMedioMedia) : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + numeroVendasMedia.toFixed(1) + ' venda(s)/mês · ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + '</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
-    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ticket Médio</th></tr></thead><tbody>' + linhasTicketMedio + '</tbody></table>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ticket Médio</th><th>Nº Vendas</th></tr></thead><tbody>' + linhasTicketMedio + '</tbody></table>' +
     '</div></div>' +
 
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
@@ -1937,7 +2073,10 @@ def gerar_html(contas: list) -> str:
         "diasAReceberPagar": PROXIMOS_DIAS_A_RECEBER_PAGAR,
     }, ensure_ascii=False)
 
-    html_insights = montar_html_insights(dre_resumo_json, classificacao_custos_json, insights_config_json)
+    faturamento_por_empresa_json = jsonlib.dumps(MANUAL_FATURAMENTO_POR_EMPRESA, ensure_ascii=False)
+
+    html_insights = montar_html_insights(dre_resumo_json, classificacao_custos_json, insights_config_json,
+                                          faturamento_por_empresa_json)
 
     usuarios_login_json = jsonlib.dumps(USUARIOS_LOGIN, ensure_ascii=False)
 
