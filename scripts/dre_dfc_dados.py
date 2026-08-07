@@ -3222,6 +3222,18 @@ JUROS_EMPRESTIMOS = {'2024-11': 14600.14963815221,
 # todo mes). Chave: "YYYY-MM". Dentro de cada mes, chave = numero da linha
 # (o mesmo "linha" que aparece em DRE_LINHAS/DFC_LINHAS), valor = numero.
 MANUAL_FATURAMENTO_KIT = {
+    # Jan-Jun: a Receita/Descontos/Descontos Cartão desses meses já vêm
+    # hardcoded direto nas linhas 7/21/22 do DRE_LINHAS (migração original
+    # da planilha antiga) -- aqui só entra o 'numero_vendas' de cada mês
+    # (conferido em 06/08/2026 contra as planilhas de Controle de
+    # Comissionamento; o Faturamento/Descontos delas bateu 100% com o que
+    # já estava no código, então não precisou mexer nessas linhas).
+    '2026-01': {'numero_vendas': 127},
+    '2026-02': {'numero_vendas': 94},
+    '2026-03': {'numero_vendas': 112},
+    '2026-04': {'numero_vendas': 88},
+    '2026-05': {'numero_vendas': 113},
+    '2026-06': {'numero_vendas': 73},
     '2026-07': {
         7: 2827381.38,    # Receita - soma da coluna "VALOR DE VENDA" (faturamento_julho.xlsx)
         21: -269687.75,   # Descontos - soma da coluna "DESCONTO"
@@ -3234,3 +3246,30 @@ MANUAL_FATURAMENTO_KIT = {
 }   # linhas DRE 7, 21, 22 (Receita e descontos) — Comissoes (151/152) agora automaticas
 MANUAL_FOLHA = {}             # ~29 linhas de folha (salarios, FGTS, ferias etc.)
 MANUAL_WEG = {}               # linha DFC 15 ("Pagamento Clientes para WEG")
+
+# Faturamento de Kit (linha 7 da DRE) quebrado por empresa -- extraído da
+# coluna "LOJA" das planilhas de faturamento/comissionamento mensais.
+# Chave externa: "YYYY-MM". Chave interna: nome da empresa exatamente como
+# aparece em EMPRESAS (atualizar_dashboard.py), usado pro card "Faturamento
+# por Empresa" (Insights). A soma das 3 empresas aqui bate com o valor
+# consolidado da linha 7 pra cada mês (conferido em 06/08/2026).
+#
+# Mapeamento de nomes de "LOJA" usados nas planilhas -> empresa oficial
+# (confirmado com o Fabrício em 06/08/2026):
+#   "Loja Matriz" / "PRIME SOL CAMPOS"      -> Prime Sol Matriz
+#   "Prime Sol RDO" / "PRIME SOL LAGOS"     -> Prime Sol Lagos
+#   "Prime Sol CF" / "PRIME CABO FRIO"      -> Prime Sol Cabo Frio
+#
+# PS Energia NÃO aparece nessas planilhas (não vende nesse formato) -- o
+# faturamento dela entra automaticamente via Omie (categoria "PS Energia"
+# + outras categorias menores, filtradas por empresa), calculado direto no
+# JS a partir dos lançamentos -- não precisa de entrada manual aqui.
+MANUAL_FATURAMENTO_POR_EMPRESA = {
+    '2026-01': {'Prime Sol Matriz': 2091738.52, 'Prime Sol Lagos': 576052.71, 'Prime Sol Cabo Frio': 97340.00},
+    '2026-02': {'Prime Sol Matriz': 2757538.38, 'Prime Sol Lagos': 444016.42, 'Prime Sol Cabo Frio': 50440.00},
+    '2026-03': {'Prime Sol Matriz': 2422291.65, 'Prime Sol Lagos': 511154.19, 'Prime Sol Cabo Frio': 53720.00},
+    '2026-04': {'Prime Sol Matriz': 869099.35, 'Prime Sol Lagos': 662805.40, 'Prime Sol Cabo Frio': 258092.00},
+    '2026-05': {'Prime Sol Matriz': 1763885.31, 'Prime Sol Lagos': 661560.26, 'Prime Sol Cabo Frio': 138218.00},
+    '2026-06': {'Prime Sol Matriz': 1995218.87, 'Prime Sol Lagos': 528223.68, 'Prime Sol Cabo Frio': 215088.00},
+    '2026-07': {'Prime Sol Matriz': 1960378.76, 'Prime Sol Lagos': 624246.62, 'Prime Sol Cabo Frio': 242756.00},
+}
