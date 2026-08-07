@@ -1263,7 +1263,7 @@ if _key and _secret:
     })
 
 
-def chamar_omie(modulo: str, call: str, param: dict, app_key: str, app_secret: str, tentativas: int = 4) -> dict:
+def chamar_omie(modulo: str, call: str, param: dict, app_key: str, app_secret: str, tentativas: int = 4, espera_fixa: float = None) -> dict:
     """Faz uma chamada genérica à API da Omie, para a empresa (App Key/
     Secret) indicada.
 
@@ -1272,6 +1272,12 @@ def chamar_omie(modulo: str, call: str, param: dict, app_key: str, app_secret: s
     crescentes, se der erro temporário (500, 425, 429 ou timeout) — sem
     isso, uma sequência de erros rápidos vira um "efeito cascata" onde a
     Omie passa a bloquear todas as chamadas seguintes.
+
+    Por padrão a espera cresce a cada tentativa (2s, 4s, 8s...). Passando
+    `espera_fixa`, todas as tentativas esperam esse tempo fixo em vez de
+    crescer -- útil pra chamadas que sabidamente falham com frequência
+    (ex: ListarMovimentos pra meses bem no futuro) e não vale a pena
+    insistir tanto tempo.
     """
     url = f"{BASE_URL}/{modulo}/"
     payload = {
@@ -1295,7 +1301,7 @@ def chamar_omie(modulo: str, call: str, param: dict, app_key: str, app_secret: s
             ultimo_erro = erro
             status = getattr(getattr(erro, "response", None), "status_code", None)
             if status in (429, 425, 500, 502, 503, 504) or isinstance(erro, requests.exceptions.Timeout):
-                espera = 2 ** tentativa  # 2s, 4s, 8s, 16s
+                espera = espera_fixa if espera_fixa is not None else 2 ** tentativa  # 2s, 4s, 8s, 16s (ou fixo, se informado)
                 print(f"AVISO: erro temporário ({status or 'timeout'}) em {call}, tentativa {tentativa}/{tentativas}. Aguardando {espera}s...")
                 time.sleep(espera)
                 continue
@@ -1417,7 +1423,25 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
     inteiro não ser publicado.
     """
     lookup = {}
+    hoje = datetime.now()
+    # Mês/ano "2 meses à frente de hoje" -- a partir daqui, ListarMovimentos
+    # historicamente quase sempre retorna 500 (não tem título previsto tão
+    # longe), então não vale a pena insistir com o mesmo empenho de um mês
+    # real (4 tentativas com espera crescendo até 16s). Reduzimos pra 2
+    # tentativas de 5s fixos nesses meses -- ainda tenta (caso exista algum
+    # título previsto de verdade lá na frente), mas sem gastar minutos do
+    # workflow em retentativas de algo que quase sempre vai falhar mesmo.
+    mes_corte = hoje.month + 2
+    ano_corte = hoje.year
+    while mes_corte > 12:
+        mes_corte -= 12
+        ano_corte += 1
+    data_corte = datetime(ano_corte, mes_corte, 1)
+
     for ini, fim in gerar_meses(PERIODO_INICIAL, PERIODO_FINAL):
+        mes_futuro_distante = datetime.strptime(ini, "%d/%m/%Y") >= data_corte
+        tentativas_mes = 2 if mes_futuro_distante else 4
+        espera_mes = 5 if mes_futuro_distante else None
         pagina = 1
         while True:
             try:
@@ -1434,6 +1458,8 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
                     },
                     app_key,
                     app_secret,
+                    tentativas=tentativas_mes,
+                    espera_fixa=espera_mes,
                 )
             except Exception as erro:
                 print(
@@ -1540,6 +1566,20 @@ def coletar_dados() -> list:
                 if (m.get("cDesCliente") or "").strip() in ("SALDO", "SALDO ANTERIOR"):
                     continue
 
+                # Previsão de Ordem de Serviço ainda NÃO faturada (cOrigem
+                # começa com "Previsão de O.S.") não é um compromisso
+                # financeiro real ainda -- é só uma projeção de faturamento
+                # futuro que nem virou título de Contas a Pagar/Receber.
+                # Diferente de uma previsão de verdade (título formal já
+                # emitido, só ainda não pago -- cOrigem "Conta a Pagar"/
+                # "Conta a Receber", cSituacao "Previsto"), essas O.S. não
+                # têm nada por trás ainda, então tiramos elas da base
+                # inteira em vez de tentar mostrar uma Situação pra elas
+                # (confirmado com um caso real: Rosemiro Azevedo da Cruz,
+                # 25/05/2026, cOrigem "Previsão de O.S. MATRIZ").
+                if (m.get("cOrigem") or "").strip().lower().startswith("previsão de o.s"):
+                    continue
+
                 cod_mov = m.get("nCodLancamento") or m.get("nCodLancRelac")
                 info_titulo = lookup_titulos.get(cod_mov, {})
 
@@ -1597,6 +1637,12 @@ def coletar_dados() -> list:
                     # real e liquidado — assumimos PAGO (saída) ou RECEBIDO
                     # (entrada) com base na natureza, em vez de deixar "-".
                     status_titulo = "RECEBIDO" if natureza_raw == "R" else "PAGO"
+                # TODO: quando Fabrício mandar o JSON bruto de um lançamento
+                # tipo "O.S." não faturada (ex: Rosemiro Azevedo da Cruz,
+                # 25/05/2026, R$ 850,00), vamos usar o campo que identifica
+                # isso pra EXCLUIR esses lançamentos da base inteira (não são
+                # título real ainda, só previsão de faturamento) -- em vez de
+                # tentar preencher a Situação pra eles.
                 data_prevista_titulo = info_titulo.get("dataPrevisao") or ""
                 data_extrato = m.get("dDataLancamento", "")
                 if status_titulo not in ("PAGO", "RECEBIDO") and data_prevista_titulo:
@@ -1974,7 +2020,7 @@ def gerar_html(contas: list) -> str:
   #drillDownOverlay.aberto {{ display: flex; }}
   .drilldown-caixa {{
     background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
-    width: 100%; max-width: 1100px; max-height: 85vh; display: flex; flex-direction: column;
+    width: 100%; max-width: 1300px; max-height: 85vh; display: flex; flex-direction: column;
     overflow: hidden;
   }}
   .drilldown-cabecalho {{
@@ -1988,13 +2034,14 @@ def gerar_html(contas: list) -> str:
     border-radius: var(--radius-sm); width: 28px; height: 28px; cursor: pointer; font-size: 14px;
   }}
   .drilldown-fechar:hover {{ border-color: var(--laranja); color: var(--laranja); }}
-  .drilldown-corpo {{ overflow: auto; padding: 0 20px 20px; }}
-  .drilldown-tabela {{ width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 12px; }}
+  .drilldown-corpo {{ overflow-y: auto; overflow-x: hidden; padding: 0 20px 20px; }}
+  .drilldown-tabela {{ border-collapse: collapse; font-size: 12.5px; margin-top: 12px; }}
   .drilldown-tabela th {{
-    text-align: left; padding: 6px 10px; color: var(--text-muted); font-weight: 600;
+    text-align: left; padding: 6px 22px 6px 10px; color: var(--text-muted); font-weight: 600;
     border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-panel);
+    position: relative; white-space: nowrap;
   }}
-  .drilldown-tabela td {{ padding: 6px 10px; border-top: 1px solid var(--border); white-space: nowrap; }}
+  .drilldown-tabela td {{ padding: 6px 10px; border-top: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
   .drilldown-tabela td.valor {{ text-align: right; font-weight: 600; }}
   .drilldown-total {{ font-weight: 800; background: rgba(54,91,221,0.08); }}
   .drilldown-vazio {{ padding: 24px 0; text-align: center; color: var(--text-muted); font-size: 13px; }}
@@ -2306,6 +2353,277 @@ function dreMesEfetivo(dataBr, competencia) {{
   return {{ ano, mes }};
 }}
 
+// ---- Tabela interativa do modal de drill-down (DRE/DFC) -- mesmas
+// funcionalidades da tabela de Lançamentos (ordenar, filtro estilo Excel,
+// redimensionar colunas, rolagem dupla), mas com estado próprio (prefixo
+// dd*) pra não interferir na tabela principal, já que os nomes de coluna
+// e os dados de origem são diferentes.
+const DD_COLUNAS = [
+  {{ key: 'data', label: 'Data', get: l => l.data || '-' }},
+  {{ key: 'empresa', label: 'Empresa', get: l => l.empresaNome || '-' }},
+  {{ key: 'conta', label: 'Banco/Cartão', get: l => l.contaNome || '-' }},
+  {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente || '-' }},
+  {{ key: 'departamento', label: 'Departamento', get: l => l.departamento || '-' }},
+  {{ key: 'observacao', label: 'Observação', get: l => l.observacao || '-' }},
+  {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor || 0) }},
+];
+const DD_LARGURA_PADRAO = {{
+  data: 110, empresa: 150, conta: 140, cliente: 190, departamento: 130, observacao: 260, valor: 120,
+}};
+let ddColFiltros = {{}};
+let ddColWidths = {{}};
+let ddOrdenacao = {{ coluna: null, direcao: null }};
+let ddResizando = null;
+let ddDadosBase = [];   // todos os lançamentos do mês/categoria atual (antes do filtro de coluna)
+let ddTituloAtual = '';
+let ddAvisoManualAtual = '';
+
+function ddValorOrdenacao(l, colKey) {{
+  switch (colKey) {{
+    case 'valor': return l.valor || 0;
+    case 'data': return paraDataISO(l.data) || '';
+    case 'cliente': return (l.cliente || '').toLowerCase();
+    case 'departamento': return (l.departamento || '').toLowerCase();
+    case 'conta': return (l.contaNome || '').toLowerCase();
+    case 'empresa': return (l.empresaNome || '').toLowerCase();
+    case 'observacao': return (l.observacao || '').toLowerCase();
+    default: return '';
+  }}
+}}
+
+function ddAplicarFiltrosColuna(lista) {{
+  return lista.filter(l => DD_COLUNAS.every(col => {{
+    const permitidos = ddColFiltros[col.key];
+    if (!permitidos) return true;
+    return permitidos.has(col.get(l));
+  }}));
+}}
+
+function ddFecharDropdowns() {{
+  document.querySelectorAll('.dropdown-filtro').forEach(d => d.remove());
+}}
+
+function ddAbrirDropdownColuna(col, btnEl) {{
+  ddFecharDropdowns();
+  const selecionadosAtuais = ddColFiltros[col.key];
+  const todosValores = [...new Set(ddDadosBase.map(col.get))].sort();
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'dropdown-filtro';
+  const rect = btnEl.getBoundingClientRect();
+  dropdown.style.top = (rect.bottom + 4) + 'px';
+  dropdown.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+
+  dropdown.innerHTML = `
+    <input type="text" class="dropdown-busca" placeholder="Buscar...">
+    <div class="dropdown-acoes">
+      <button type="button" class="dropdown-todos">Selecionar tudo</button>
+      <button type="button" class="dropdown-nenhum">Limpar</button>
+    </div>
+    <div class="dropdown-lista"></div>
+    <button type="button" class="dropdown-ok">Aplicar</button>
+  `;
+
+  const lista = dropdown.querySelector('.dropdown-lista');
+  function montarLista(filtroTexto) {{
+    const termo = (filtroTexto || '').toLowerCase();
+    lista.innerHTML = todosValores
+      .filter(v => String(v).toLowerCase().includes(termo))
+      .map(v => {{
+        const marcado = !selecionadosAtuais || selecionadosAtuais.has(v);
+        return `<label class="dropdown-item"><input type="checkbox" value="${{String(v).replace(/"/g, '&quot;')}}" ${{marcado ? 'checked' : ''}}> ${{v || '(vazio)'}}</label>`;
+      }}).join('');
+  }}
+  montarLista('');
+
+  dropdown.querySelector('.dropdown-busca').addEventListener('input', (e) => montarLista(e.target.value));
+  dropdown.querySelector('.dropdown-todos').addEventListener('click', () => {{
+    lista.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = true);
+  }});
+  dropdown.querySelector('.dropdown-nenhum').addEventListener('click', () => {{
+    lista.querySelectorAll('input[type=checkbox]').forEach(c => c.checked = false);
+  }});
+  dropdown.querySelector('.dropdown-ok').addEventListener('click', () => {{
+    const marcados = new Set(Array.from(lista.querySelectorAll('input[type=checkbox]:checked')).map(c => c.value));
+    if (marcados.size === todosValores.length) {{
+      delete ddColFiltros[col.key];
+    }} else {{
+      ddColFiltros[col.key] = marcados;
+    }}
+    ddFecharDropdowns();
+    ddRenderizarTabela();
+  }});
+
+  document.body.appendChild(dropdown);
+}}
+
+function ddRenderizarTabela() {{
+  const corpo = document.getElementById('drillDownCorpo');
+  let filtrados = ddAplicarFiltrosColuna(ddDadosBase);
+
+  if (ddOrdenacao.coluna) {{
+    const dir = ddOrdenacao.direcao === 'asc' ? 1 : -1;
+    filtrados = [...filtrados].sort((a, b) => {{
+      const va = ddValorOrdenacao(a, ddOrdenacao.coluna);
+      const vb = ddValorOrdenacao(b, ddOrdenacao.coluna);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    }});
+  }} else {{
+    filtrados = [...filtrados].sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+  }}
+
+  document.getElementById('drillDownSubtitulo').textContent =
+    ddTituloAtual + ` — ${{filtrados.length}} de ${{ddDadosBase.length}} lançamento(s)`;
+
+  if (!ddDadosBase.length) {{
+    corpo.innerHTML = ddAvisoManualAtual + '<div class="drilldown-vazio">Nenhum lançamento encontrado pra esse mês/categoria.</div>';
+    return;
+  }}
+  if (!filtrados.length) {{
+    corpo.innerHTML = ddAvisoManualAtual + '<div class="drilldown-vazio">Nenhum lançamento bate com os filtros de coluna atuais.</div>';
+    return;
+  }}
+
+  const total = filtrados.reduce((s, l) => s + (l.valor || 0), 0);
+
+  const headerHtml = DD_COLUNAS.map(col => {{
+    const ativo = ddColFiltros[col.key] ? 'ativo' : '';
+    const largura = ddColWidths[col.key] || DD_LARGURA_PADRAO[col.key] || 150;
+    const ordenandoEsta = ddOrdenacao.coluna === col.key;
+    const seta = ordenandoEsta ? (ddOrdenacao.direcao === 'asc' ? ' ▲' : ' ▼') : '';
+    const classeOrdenacao = ordenandoEsta ? 'th-ordenavel ativo' : 'th-ordenavel';
+    return `<th style="width:${{largura}}px">
+      <span class="${{classeOrdenacao}}" data-col="${{col.key}}" title="Clique para ordenar">${{col.label}}${{seta}}</span>
+      <button type="button" class="btn-filtro-col ${{ativo}}" data-col="${{col.key}}">▾</button>
+      <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="-20" title="Diminuir largura">−</button>
+      <button type="button" class="btn-largura" data-col="${{col.key}}" data-delta="20" title="Aumentar largura">+</button>
+      <div class="resize-handle" data-col="${{col.key}}"></div>
+    </th>`;
+  }}).join('');
+
+  const larguraTotalTabela = DD_COLUNAS.reduce(
+    (soma, col) => soma + (ddColWidths[col.key] || DD_LARGURA_PADRAO[col.key] || 150), 0
+  );
+
+  const linhasHtml = filtrados.map(l => `
+    <tr>
+      <td>${{l.data || '-'}}</td>
+      <td>${{l.empresaNome || '-'}}</td>
+      <td>${{l.contaNome || '-'}}</td>
+      <td>${{l.cliente || '-'}}</td>
+      <td>${{l.departamento || '-'}}</td>
+      <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao || '-'}}</td>
+      <td class="valor">${{fmtMoeda(l.valor || 0)}}</td>
+    </tr>
+  `).join('');
+
+  corpo.innerHTML = ddAvisoManualAtual + `
+    <div class="scroll-topo-wrap" id="ddScrollTopoWrap">
+      <div class="scroll-topo-inner" id="ddScrollTopoInner"></div>
+    </div>
+    <div class="tabela-wrap" id="ddTabelaWrap">
+      <table class="drilldown-tabela" style="width:${{larguraTotalTabela}}px">
+        <thead><tr>${{headerHtml}}</tr></thead>
+        <tbody>
+          ${{linhasHtml}}
+          <tr class="drilldown-total">
+            <td colspan="6">Total (${{filtrados.length}} lançamento(s))</td>
+            <td class="valor">${{fmtMoeda(total)}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const scrollTopoWrap = document.getElementById('ddScrollTopoWrap');
+  const scrollTopoInner = document.getElementById('ddScrollTopoInner');
+  const tabelaWrapEl = document.getElementById('ddTabelaWrap');
+  scrollTopoInner.style.width = larguraTotalTabela + 'px';
+  let ddSincronizando = false;
+  scrollTopoWrap.addEventListener('scroll', () => {{
+    if (ddSincronizando) return;
+    ddSincronizando = true;
+    tabelaWrapEl.scrollLeft = scrollTopoWrap.scrollLeft;
+    ddSincronizando = false;
+  }});
+  tabelaWrapEl.addEventListener('scroll', () => {{
+    if (ddSincronizando) return;
+    ddSincronizando = true;
+    scrollTopoWrap.scrollLeft = tabelaWrapEl.scrollLeft;
+    ddSincronizando = false;
+  }});
+}}
+
+// Delegação de clique (ordenar / filtro / largura) dentro do modal.
+// Presa no "document" (não no #drillDownCorpo) de propósito: esse <div>
+// só é criado mais adiante no HTML, e nesse ponto do script ele ainda não
+// existe -- getElementById retornaria null e quebraria a página inteira.
+// O filtro closest('#drillDownCorpo') garante que só reage a cliques
+// dentro do modal, sem interferir na tabela de Lançamentos.
+document.addEventListener('click', (e) => {{
+  if (!e.target.closest('#drillDownCorpo')) return;
+
+  const thOrdenavel = e.target.closest('.th-ordenavel');
+  if (thOrdenavel) {{
+    const colKey = thOrdenavel.dataset.col;
+    if (ddOrdenacao.coluna !== colKey) {{
+      ddOrdenacao = {{ coluna: colKey, direcao: 'asc' }};
+    }} else if (ddOrdenacao.direcao === 'asc') {{
+      ddOrdenacao = {{ coluna: colKey, direcao: 'desc' }};
+    }} else {{
+      ddOrdenacao = {{ coluna: null, direcao: null }};
+    }}
+    ddRenderizarTabela();
+    return;
+  }}
+
+  const btnLargura = e.target.closest('.btn-largura');
+  if (btnLargura) {{
+    const colKey = btnLargura.dataset.col;
+    const delta = parseInt(btnLargura.dataset.delta, 10);
+    const larguraAtual = ddColWidths[colKey] || DD_LARGURA_PADRAO[colKey] || 150;
+    ddColWidths[colKey] = Math.max(60, larguraAtual + delta);
+    ddRenderizarTabela();
+    return;
+  }}
+
+  const btn = e.target.closest('.btn-filtro-col');
+  if (!btn) return;
+  const colKey = btn.dataset.col;
+  const col = DD_COLUNAS.find(c => c.key === colKey);
+  if (col) ddAbrirDropdownColuna(col, btn);
+}});
+
+// Redimensionamento por arraste (mesma lógica da tabela principal, com
+// estado ddResizando próprio pra não colidir com o "resizando" dela).
+// Mesmo motivo acima: escutando no document, filtrando por closest().
+document.addEventListener('mousedown', (e) => {{
+  if (!e.target.closest('#drillDownCorpo')) return;
+  const handle = e.target.closest('.resize-handle');
+  if (!handle) return;
+  e.preventDefault();
+  const th = handle.closest('th');
+  ddResizando = {{ colKey: handle.dataset.col, startX: e.clientX, startWidth: th.offsetWidth, th, handle }};
+  handle.classList.add('resizando');
+  document.body.style.cursor = 'col-resize';
+}});
+document.addEventListener('mousemove', (e) => {{
+  if (!ddResizando) return;
+  const delta = e.clientX - ddResizando.startX;
+  const novaLargura = Math.max(60, ddResizando.startWidth + delta);
+  ddResizando.th.style.width = novaLargura + 'px';
+}});
+document.addEventListener('mouseup', () => {{
+  if (!ddResizando) return;
+  ddColWidths[ddResizando.colKey] = ddResizando.th.offsetWidth;
+  ddResizando.handle.classList.remove('resizando');
+  ddResizando = null;
+  document.body.style.cursor = '';
+  ddRenderizarTabela();
+}});
+
 function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, tituloLinha) {{
   const todos = insTodosLancamentos();
   const filtrados = todos.filter(function (l) {{
@@ -2317,45 +2635,17 @@ function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, titul
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const ehManual = (ano < 2026) || (ano === 2026 && mes < 7);
   document.getElementById('drillDownTitulo').textContent = tituloLinha;
-  document.getElementById('drillDownSubtitulo').textContent =
-    `${{nomesMes[mes - 1]}}/${{ano}} — categoria "${{categoriaAlvo}}" — ${{filtrados.length}} lançamento(s)`;
 
-  const corpo = document.getElementById('drillDownCorpo');
-  const avisoManual = ehManual
+  ddTituloAtual = `${{nomesMes[mes - 1]}}/${{ano}} — categoria "${{categoriaAlvo}}"`;
+  ddAvisoManualAtual = ehManual
     ? '<div class="drilldown-aviso">⚠️ O valor dessa célula foi digitado manualmente (cópia da planilha antiga) — a soma dos lançamentos abaixo vem direto da Omie e pode não bater exatamente com ele.</div>'
     : '';
-  if (!filtrados.length) {{
-    corpo.innerHTML = avisoManual + '<div class="drilldown-vazio">Nenhum lançamento encontrado pra esse mês/categoria.</div>';
-  }} else {{
-    filtrados.sort((a, b) => (a.data || '').localeCompare(b.data || ''));
-    const total = filtrados.reduce((s, l) => s + (l.valor || 0), 0);
-    const linhasHtml = filtrados.map(l => `
-      <tr>
-        <td>${{l.data || '-'}}</td>
-        <td>${{l.empresaNome || '-'}}</td>
-        <td>${{l.contaNome || '-'}}</td>
-        <td>${{l.cliente || '-'}}</td>
-        <td>${{l.departamento || '-'}}</td>
-        <td>${{l.observacao || '-'}}</td>
-        <td class="valor">${{fmtMoeda(l.valor || 0)}}</td>
-      </tr>
-    `).join('');
-    corpo.innerHTML = avisoManual + `
-      <table class="drilldown-tabela">
-        <thead><tr>
-          <th>Data</th><th>Empresa</th><th>Banco/Cartão</th><th>Cliente/Fornecedor</th>
-          <th>Departamento</th><th>Observação</th><th style="text-align:right">Valor</th>
-        </tr></thead>
-        <tbody>
-          ${{linhasHtml}}
-          <tr class="drilldown-total">
-            <td colspan="6">Total (${{filtrados.length}} lançamento(s))</td>
-            <td class="valor">${{fmtMoeda(total)}}</td>
-          </tr>
-        </tbody>
-      </table>
-    `;
-  }}
+  ddDadosBase = filtrados;
+  ddColFiltros = {{}};
+  ddColWidths = {{}};
+  ddOrdenacao = {{ coluna: null, direcao: null }};
+  ddRenderizarTabela();
+
   document.getElementById('drillDownOverlay').classList.add('aberto');
 }}
 
@@ -2822,6 +3112,7 @@ function renderizar() {{
       <td>${{fmtMoeda(l.valor)}}</td>
       <td>${{l.categoria}}</td>
       <td>${{l.departamento}}</td>
+      <td>${{lancClassificarCusto(l)}}</td>
       <td>${{l.contaNome}}</td>
       <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
       <td>${{l.dataConciliacao || '-'}}</td>
