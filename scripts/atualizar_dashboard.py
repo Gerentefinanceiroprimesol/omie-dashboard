@@ -25,7 +25,7 @@ import requests
 
 from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, DE_PARA, \
     MANUAL_FATURAMENTO_POR_EMPRESA
-from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela
+from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela, calcular_nao_classificados
 # =============================================================
 # Bloco abaixo: lógica da aba Insights (Custo Fixo/Variável, resumo
 # da DRE, e o HTML/JS da aba). Fica isolado aqui dentro só visualmente
@@ -965,6 +965,9 @@ function renderizarInsights() {
       function pct(v) { return (v !== null && v !== undefined && receita) ? (v / receita * 100) : null; }
       return {
         nome: m.nome,
+        receita: (receita === null || receita === undefined) ? null : receita,
+        lucroBruto: (lb === null || lb === undefined) ? null : lb,
+        ebitda: (eb === null || eb === undefined) ? null : eb,
         margemBruta: pct(lb),
         margemEbitda: pct(eb),
         margemLiquida: pct(ll),
@@ -983,16 +986,33 @@ function renderizarInsights() {
     return v !== null ? '<span class="' + insClasseVariacao(v) + '">' + fmtMoeda(v) + '</span>' : '<span class="ins-neutro">—</span>';
   }
 
+  function insSomaSimples(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) : null;
+  }
+
   const rentabilidadeSerie = insRentabilidadeMensal();
   const mediaMB = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemBruta; }));
   const mediaME = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemEbitda; }));
   const mediaML = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemLiquida; }));
   const mediaLL = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.lucroLiquido; }));
 
+  // Acumulado != média simples dos percentuais -- é a soma do numerador (ex:
+  // Lucro Bruto) dividida pela soma do denominador (Receita) do período
+  // inteiro, senão um mês pequeno pesa igual a um mês grande e distorce o
+  // resultado. Lucro Líquido acumulado é simplesmente a soma dos meses (o
+  // mesmo total do card de Lucro Líquido acumulado no topo do Insights).
+  const receitaAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.receita; }));
+  const lbAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.lucroBruto; }));
+  const ebAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.ebitda; }));
+  const llAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.lucroLiquido; }));
+  const margemAcum = function (v) { return (v !== null && receitaAcum) ? (v / receitaAcum * 100) : null; };
+
   const linhasRentabilidadeMensal = rentabilidadeSerie.map(function (r) {
     return '<tr><td>' + r.nome + '</td><td>' + celRentabPct(r.margemBruta) + '</td><td>' + celRentabPct(r.margemEbitda) + '</td><td>' + celRentabPct(r.margemLiquida) + '</td><td>' + celRentabMoeda(r.lucroLiquido) + '</td></tr>';
   }).join('') +
-    '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>';
+    '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>' +
+    '<tr><td><strong>Acumulado</strong></td><td>' + celRentabPct(margemAcum(lbAcum)) + '</td><td>' + celRentabPct(margemAcum(ebAcum)) + '</td><td>' + celRentabPct(margemAcum(llAcum)) + '</td><td><strong>' + celRentabMoeda(llAcum) + '</strong></td></tr>';
 
   const rentabilidadeMensalHtml = '<div class="ins-card ins-rentab-card">' +
     '<div class="ins-kpi-label">Rentabilidade Mês a Mês</div>' +
@@ -1930,9 +1950,41 @@ def formatar_variacao_percentual(atual, anterior):
     return f'<span {cor}>Δ {sinal}{valor_fmt}%</span>'
 
 
+def montar_alerta_nao_classificados_html(itens: list, id_prefixo: str) -> str:
+    if not itens:
+        return ""
+    total_residual = sum(i["valor_residual"] for i in itens)
+    linhas_tabela = "".join(
+        f'<tr><td>{i["data"]}</td><td>{htmllib.escape(i["empresa"])}</td>'
+        f'<td>{htmllib.escape(i["categoria"])}</td><td>{htmllib.escape(i["departamento"])}</td>'
+        f'<td>{htmllib.escape(i["cliente"])}</td>'
+        f'<td class="valor">{formatar_valor_dre_dfc(i["valor_residual"])}</td></tr>'
+        for i in itens
+    )
+    return f"""
+    <div class="dre-alerta-nc">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <span>⚠️ <strong>{len(itens)}</strong> lançamento(s) totalizando <strong>{formatar_valor_dre_dfc(total_residual)}</strong>
+        não estão batendo com nenhuma linha desta demonstração (categoria/departamento sem linha correspondente,
+        ou capturados em mais de uma linha).</span>
+        <button type="button" class="ins-btn-alerta" onclick="toggleDetalheInsight('{id_prefixo}ListaNC')">Ver lançamentos</button>
+      </div>
+      <div class="ins-detail-panel" id="{id_prefixo}ListaNC">
+        <div style="padding-top:8px;border-top:1px solid rgba(250,168,33,0.3);margin-top:8px;overflow-x:auto;">
+          <table class="drilldown-tabela">
+            <thead><tr><th>Data</th><th>Empresa</th><th>Categoria</th><th>Departamento</th><th>Cliente/Fornecedor</th><th>Valor não classificado</th></tr></thead>
+            <tbody>{linhas_tabela}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    """
+
+
 def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancamentos: list,
                                 meses_dinamicos: list, manual_faturamento: dict,
-                                manual_folha: dict, manual_weg: dict, linha_base_pct: int) -> str:
+                                manual_folha: dict, manual_weg: dict, linha_base_pct: int,
+                                alerta_html: str = "") -> str:
     linhas = montar_linhas_tabela(
         linhas_config, todos_lancamentos, meses_dinamicos,
         manual_faturamento, manual_folha, manual_weg,
@@ -2011,6 +2063,7 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
     return f"""
     <div class="dre-dfc-wrap">
       <h2>{titulo}</h2>
+      {alerta_html}
       <div class="scroll-topo-wrap dre-scroll-topo"><div class="scroll-topo-inner"></div></div>
       <div class="dre-dfc-scroll">
         <table class="dre-dfc-tabela">
@@ -2035,18 +2088,33 @@ def gerar_html(contas: list) -> str:
     todos_lancamentos_grupo = [l for c in contas for l in c["lancamentos"]]
     meses_dinamicos = calcular_meses_dinamicos(todos_lancamentos_grupo, 2026, 12)
 
+    # Cópia rasa só pra auditoria de não-classificados poder mostrar de qual
+    # empresa é cada lançamento (o dict original de lançamento não carrega
+    # esse campo -- é só anexado no JS pro resto do dashboard).
+    lancamentos_com_empresa = [dict(l, empresa=c["empresa"]) for c in contas for l in c["lancamentos"]]
+
     # No DFC, tudo depois de "Posição de Caixa Acumulada" (linha 190) é só
     # conferência interna (Saldo inicial, Entrada/Saída/Líquido de Extratos,
     # Check) -- não faz parte do relatório em si, então não exibimos.
     dfc_linhas_visiveis = [x for x in DFC_LINHAS if x["linha"] <= 190]
 
+    # "Prova dos 9": lançamentos (Jul/2026 em diante) cujo valor não bateu
+    # 100% com nenhuma linha do respectivo relatório -- vira um alerta
+    # agregado, com lista expansível, logo acima da tabela.
+    alerta_dfc = montar_alerta_nao_classificados_html(
+        calcular_nao_classificados(dfc_linhas_visiveis, lancamentos_com_empresa, meses_dinamicos), "dfc",
+    )
+    alerta_dre = montar_alerta_nao_classificados_html(
+        calcular_nao_classificados(DRE_LINHAS, lancamentos_com_empresa, meses_dinamicos), "dre",
+    )
+
     html_dfc = montar_tabela_dre_dfc_html(
         "Demonstrativo de Fluxo de Caixa (DFC)", dfc_linhas_visiveis, todos_lancamentos_grupo,
-        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 8,
+        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 8, alerta_dfc,
     )
     html_dre = montar_tabela_dre_dfc_html(
         "Demonstração do Resultado do Exercício (DRE)", DRE_LINHAS, todos_lancamentos_grupo,
-        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 6,
+        meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 6, alerta_dre,
     )
 
     # --- Dados para a aba Insights -------------------------------------
@@ -2205,14 +2273,27 @@ def gerar_html(contas: list) -> str:
 
   .dre-dfc-wrap {{ padding: 20px 32px 40px; }}
   .dre-dfc-wrap h2 {{ font-size: 16px; margin-bottom: 14px; }}
-  .dre-dfc-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }}
+  .dre-alerta-nc {{
+    background: rgba(250,168,33,0.12); border: 1px solid var(--laranja);
+    border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12.5px;
+    color: var(--laranja); margin-bottom: 14px;
+  }}
+  .dre-alerta-nc .ins-btn-alerta {{
+    background: rgba(250,168,33,0.18); border: 1px solid var(--laranja); color: var(--laranja);
+    font-size: 10.5px; font-weight: 700; padding: 4px 10px; border-radius: 5px; cursor: pointer;
+  }}
+  .dre-alerta-nc .ins-btn-alerta:hover {{ background: rgba(250,168,33,0.32); }}
+  .dre-alerta-nc .ins-detail-panel {{ max-height: 0; overflow: hidden; transition: max-height .25s ease; }}
+  .dre-alerta-nc .ins-detail-panel.aberto {{ max-height: 420px; overflow-y: auto; margin-top: 12px; }}
+  .dre-dfc-scroll {{ overflow-x: auto; overflow-y: auto; max-height: 65vh; border: 1px solid var(--border); border-radius: var(--radius-sm); }}
   .dre-dfc-tabela {{
     border-collapse: collapse; width: auto; min-width: 100%; font-size: 12px;
     white-space: nowrap; table-layout: auto;
   }}
   .dre-dfc-tabela th {{
-    background: var(--bg-panel); text-align: right; padding: 8px 10px; font-size: 10.5px;
-    text-transform: uppercase; color: var(--text-faint); position: sticky; top: 0;
+    background: var(--bg-card); text-align: right; padding: 8px 10px; font-size: 10.5px;
+    text-transform: uppercase; color: var(--text); font-weight: 700; position: sticky; top: 0;
+    border-bottom: 2px solid var(--laranja);
   }}
   .dre-dfc-tabela th:first-child {{ text-align: left; position: sticky; left: 0; z-index: 2; }}
   .dre-dfc-tabela td {{ padding: 6px 10px; text-align: right; border-top: 1px solid var(--border); }}
