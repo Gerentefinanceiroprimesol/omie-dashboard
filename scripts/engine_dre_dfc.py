@@ -3,11 +3,34 @@
 lançamentos ja coletados da Omie (mesma lista usada no resto do dashboard)
 combinada com a classificacao de dre_dfc_dados.py."""
 
+import re
+import unicodedata
+import difflib
 from datetime import datetime
 from dre_dfc_dados import DE_PARA, DRE_LINHAS, DFC_LINHAS, JUROS_EMPRESTIMOS, \
     MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG
 
 MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+
+_RE_PERCENTUAL = re.compile(r'\(([\d.,]+)\s*%\)\s*$')
+_RE_INATIVA = re.compile(r'\s*\(inativ[ao]\)', re.IGNORECASE)
+
+
+def _chave_comparacao(s: str) -> str:
+    """Normaliza uma string (categoria ou departamento) pra comparação
+    tolerante a maiúscula/minúscula, acentuação e espaços sobrando -- ex:
+    "comercial", "Comercial ", "COMERCIAL" e "Comércial" viram a mesma
+    chave. NÃO tolera erro de digitação de letra (troca/falta de letra):
+    testamos e um limiar de similaridade "% parecido" pra isso é perigoso
+    (ex: "Mão de Obra Direta - MOD" e "Mão de Obra Indireta - MOI" dão 92%
+    de parecido entre si sendo departamentos DIFERENTES de verdade -- mais
+    parecido até que "Comercial" vs "Comerical", um erro de digitação real).
+    Erros de digitação de letra ficam de fora da correção automática e são
+    sinalizados como sugestão no alerta de não-classificados, pra correção
+    manual (no Omie) em vez de correção automática arriscada."""
+    s = unicodedata.normalize("NFKD", (s or "").strip().casefold())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.split())
 
 # Algumas categorias do Omie (ex: "FGTS", "Salários", "Plano de Saúde") chegam
 # sem indicar o departamento -- o valor é um único lançamento que precisa ser
@@ -33,6 +56,50 @@ def normalizar_categoria(categoria_bruta: str) -> str:
     return DE_PARA.get((categoria_bruta or "").strip(), (categoria_bruta or "").strip())
 
 
+def dividir_categoria_composta(categoria_bruta: str):
+    """A Omie às vezes rateia um único lançamento entre 2+ categorias, ex:
+    'Despesas com KITs (13,434829%); Insumos para Obras (86,565171%)'. Sem
+    tratar isso, o lançamento inteiro não batia com NENHUMA linha do DRE/DFC
+    (a string toda virava uma "categoria" que não existe em lugar nenhum) --
+    mesmo problema que já tinha sido resolvido só pro Insights, replicado
+    aqui pra engine do DRE/DFC.
+
+    Retorna uma lista de (categoria_normalizada, peso), peso somando ~1.0.
+    Quando a Omie informa o percentual de cada parte, usamos ele; quando não
+    informa (categorias só separadas por ';', sem percentual), rateamos
+    igualmente entre as partes -- mesma aproximação já usada no Insights."""
+    bruta = (categoria_bruta or "").strip()
+    if not bruta:
+        return [("-", 1.0)]
+
+    partes_brutas = [p.strip() for p in bruta.split(";") if p.strip()]
+    if not partes_brutas:
+        partes_brutas = [bruta]
+
+    partes_com_pct = []  # (categoria_limpa, percentual_ou_None)
+    for parte in partes_brutas:
+        parte_sem_inativa = _RE_INATIVA.sub("", parte).strip()
+        m = _RE_PERCENTUAL.search(parte_sem_inativa)
+        if m:
+            pct = float(m.group(1).replace(".", "").replace(",", ".")) if "," in m.group(1) else float(m.group(1))
+            categoria_limpa = _RE_PERCENTUAL.sub("", parte_sem_inativa).strip()
+            partes_com_pct.append((categoria_limpa, pct))
+        else:
+            partes_com_pct.append((parte_sem_inativa, None))
+
+    tem_algum_pct = any(pct is not None for _, pct in partes_com_pct)
+    if tem_algum_pct:
+        soma_pct = sum(pct for _, pct in partes_com_pct if pct is not None)
+        n_sem_pct = sum(1 for _, pct in partes_com_pct if pct is None)
+        pct_restante_por_parte = (max(0.0, 100.0 - soma_pct) / n_sem_pct) if n_sem_pct else 0.0
+        pesos = [(cat, (pct if pct is not None else pct_restante_por_parte) / 100.0) for cat, pct in partes_com_pct]
+    else:
+        peso_igual = 1.0 / len(partes_com_pct)
+        pesos = [(cat, peso_igual) for cat, _ in partes_com_pct]
+
+    return [(normalizar_categoria(cat), peso) for cat, peso in pesos]
+
+
 def mes_efetivo(data_br: str, competencia: str):
     """data_br no formato dd/mm/yyyy. Retorna (ano, mes) já deslocado se a
     competência for 'Mês Anterior'."""
@@ -51,20 +118,120 @@ def mes_efetivo(data_br: str, competencia: str):
     return (ano, mes)
 
 
+def _capturado_para_linha(l, categoria_linha, base_sem_departamento, sufixo_alvo):
+    """Quanto do valor do lançamento l é capturado pela linha categoria_linha
+    -- considerando que a categoria do lançamento pode vir composta (ver
+    dividir_categoria_composta) e que, se a linha pede um sufixo de
+    departamento, a parte "base" sem sufixo é rateada pelo departamento.
+    A comparação (categoria x categoria, departamento x departamento) é
+    tolerante a maiúscula/minúscula, acento e espaço sobrando -- ver
+    _chave_comparacao."""
+    valor_total = l.get("valor", 0) or 0
+    chave_categoria_linha = _chave_comparacao(categoria_linha)
+    chave_base = _chave_comparacao(base_sem_departamento) if base_sem_departamento else None
+    capturado = 0.0
+    for cat_norm, peso in dividir_categoria_composta(l.get("categoria", "")):
+        valor_parte = valor_total * peso
+        chave_cat = _chave_comparacao(cat_norm)
+        if chave_cat == chave_categoria_linha:
+            capturado += valor_parte
+        elif sufixo_alvo and chave_cat == chave_base:
+            rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
+            for d in rateio:
+                if _sufixo_departamento(d.get("nome")) == sufixo_alvo:
+                    capturado += valor_parte * (d.get("percentual", 0) or 0) / 100
+    return capturado
+
+
+def _sufixo_departamento(nome_departamento):
+    """Acha o sufixo (MOD/MOI/ADM/Comercial) correspondente a um nome de
+    departamento da Omie, tolerante a maiúscula/minúscula/acento/espaço."""
+    chave = _chave_comparacao(nome_departamento)
+    for nome_omie, sufixo in DEPARTAMENTO_OMIE_PARA_SUFIXO.items():
+        if _chave_comparacao(nome_omie) == chave:
+            return sufixo
+    return None
+
+
+def _base_e_sufixo(categoria_linha):
+    if " - " in categoria_linha:
+        possivel_base, possivel_sufixo = categoria_linha.rsplit(" - ", 1)
+        if possivel_sufixo in SUFIXOS_DEPARTAMENTO:
+            return possivel_base, possivel_sufixo
+    return None, None
+
+
+def _sugestao_mais_parecida(valor_bruto, candidatos):
+    """Entre os candidatos conhecidos (nomes de categoria ou de
+    departamento), acha o mais parecido com valor_bruto e devolve
+    (candidato, % parecido) só se for uma pista razoável (>=70%) -- não é
+    correção automática, é só a dica que aparece no alerta pra facilitar a
+    correção manual no Omie."""
+    if not valor_bruto:
+        return None
+    melhor, melhor_score = None, 0.0
+    chave_bruta = _chave_comparacao(valor_bruto)
+    for candidato in candidatos:
+        score = difflib.SequenceMatcher(None, chave_bruta, _chave_comparacao(candidato)).ratio()
+        if score > melhor_score:
+            melhor, melhor_score = candidato, score
+    if melhor and melhor_score >= 0.70:
+        return {"sugestao": melhor, "parecidoPct": round(melhor_score * 100, 1)}
+    return None
+
+
+def _capturado_categoria_simples(l, categoria_alvo):
+    """Quanto do valor do lançamento l pertence à categoria_alvo (sem rateio
+    por departamento -- usado pelas linhas híbridas de receita/custo de
+    Kits, que são um total único da empresa, não divididas por
+    departamento). Lida com categoria composta (dividir_categoria_composta)
+    e comparação tolerante a maiúscula/acento/espaço."""
+    valor_total = l.get("valor", 0) or 0
+    chave_alvo = _chave_comparacao(categoria_alvo)
+    return sum(
+        valor_total * peso
+        for cat_norm, peso in dividir_categoria_composta(l.get("categoria", ""))
+        if _chave_comparacao(cat_norm) == chave_alvo
+    )
+
+
 def calcular_nao_classificados(linhas_config, todos_lancamentos, meses_dinamicos):
     """'Prova dos 9': para cada lançamento (fora transferência interna, e com
     data real dentro dos meses dinâmicos -- Jan-Jun/2026 é estático, copiado
     da planilha, fora do escopo dessa conferência automática), verifica se o
     valor foi 100% capturado por alguma linha omie_categoria de linhas_config
-    (batendo direto pela categoria, ou pela categoria "base" ratada por
-    departamento -- ver DEPARTAMENTO_OMIE_PARA_SUFIXO). O que sobrar
-    (positivo = dinheiro que não caiu em nenhuma linha; negativo = caiu em
-    mais de uma linha por engano) é devolvido pra virar o alerta na tela.
-    Não depende de competência/mês de cada linha -- é uma checagem de
-    COBERTURA de categoria, não de valor por mês (que seria distorcido pelas
-    linhas com competência "Mês Anterior")."""
+    -- batendo direto pela categoria, pela categoria "base" ratada por
+    departamento (ver DEPARTAMENTO_OMIE_PARA_SUFIXO), pelas linhas híbridas
+    de receita/custo de Kits (só a partir do mês em que cada uma vira
+    automática), e também lidando com categorias compostas (ver
+    dividir_categoria_composta). O que sobrar (positivo = dinheiro que não
+    caiu em nenhuma linha; negativo = caiu em mais de uma linha por engano)
+    é devolvido pra virar o alerta na tela, junto com uma sugestão de
+    categoria/departamento parecido (só um palpite pra facilitar a correção
+    manual -- ver _sugestao_mais_parecida). Não depende de competência/mês
+    de cada linha omie_categoria -- é uma checagem de COBERTURA de
+    categoria, não de valor por mês (que seria distorcido pelas linhas com
+    competência "Mês Anterior")."""
     meses_validos = set(meses_dinamicos)
-    linhas_omie = [item for item in linhas_config if item["classif"]["tipo"] == "omie_categoria"]
+    linhas_parsed = [
+        (item["classif"]["categoria"], *_base_e_sufixo(item["classif"]["categoria"]))
+        for item in linhas_config if item["classif"]["tipo"] == "omie_categoria"
+    ]
+
+    # linhas híbridas: capturam a categoria inteira (sem rateio por
+    # departamento) só a partir do mês em que passam a ser automáticas.
+    regras_hibridas = []
+    for item in linhas_config:
+        if item["classif"]["tipo"] == "receita_kit_hibrida":
+            corte = item["classif"]["automatico_a_partir_de"]
+            regras_hibridas.extend((cat, corte) for cat in item["classif"]["categorias"])
+        elif item["classif"]["tipo"] == "especial_kits_cogs" and item["classif"].get("custo_real_a_partir_de"):
+            regras_hibridas.append(("Despesas com Kits", item["classif"]["custo_real_a_partir_de"]))
+
+    categorias_conhecidas = sorted({categoria_linha for categoria_linha, _, _ in linhas_parsed}
+                                    | {base for _, base, _ in linhas_parsed if base}
+                                    | {cat for cat, _ in regras_hibridas})
+    departamentos_conhecidos = list(DEPARTAMENTO_OMIE_PARA_SUFIXO.keys())
 
     resultado = []
     for l in todos_lancamentos:
@@ -74,30 +241,37 @@ def calcular_nao_classificados(linhas_config, todos_lancamentos, meses_dinamicos
         if eff_real not in meses_validos:
             continue
         valor = l.get("valor", 0) or 0
-        cat_norm = normalizar_categoria(l.get("categoria", ""))
-        capturado = 0.0
-        for item in linhas_omie:
-            categoria_linha = item["classif"]["categoria"]
-            if cat_norm == categoria_linha:
-                capturado += valor
-                continue
-            if " - " in categoria_linha:
-                base, sufixo = categoria_linha.rsplit(" - ", 1)
-                if sufixo in SUFIXOS_DEPARTAMENTO and cat_norm == base:
-                    rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
-                    for d in rateio:
-                        if DEPARTAMENTO_OMIE_PARA_SUFIXO.get(d.get("nome")) == sufixo:
-                            capturado += valor * (d.get("percentual", 0) or 0) / 100
+        capturado = sum(
+            _capturado_para_linha(l, categoria_linha, base, sufixo)
+            for categoria_linha, base, sufixo in linhas_parsed
+        )
+        for categoria_alvo, corte in regras_hibridas:
+            if eff_real >= corte:
+                capturado += _capturado_categoria_simples(l, categoria_alvo)
         residual = valor - capturado
         if abs(residual) > 0.01:
-            resultado.append({
+            cat_bruta = l.get("categoria", "") or ""
+            chave_cat_bruta = _chave_comparacao(cat_bruta)
+            categoria_bate = any(_chave_comparacao(c) == chave_cat_bruta for c in categorias_conhecidas)
+            if categoria_bate:
+                # a categoria em si já é reconhecida (ex: "FGTS", que precisa
+                # de departamento) -- então o que falta é o departamento
+                # bater com um dos conhecidos (Comercial/ADM/MOD/MOI).
+                sugestao = _sugestao_mais_parecida(l.get("departamento", ""), departamentos_conhecidos)
+            else:
+                sugestao = _sugestao_mais_parecida(cat_bruta, categorias_conhecidas)
+            item = {
                 "data": l.get("data", ""),
                 "empresa": l.get("empresa", "-"),
                 "categoria": l.get("categoria", "-") or "-",
                 "departamento": l.get("departamento", "-"),
                 "cliente": l.get("cliente", "-"),
                 "valor_residual": residual,
-            })
+            }
+            if sugestao:
+                item["sugestao"] = sugestao["sugestao"]
+                item["sugestao_parecido_pct"] = sugestao["parecidoPct"]
+            resultado.append(item)
     resultado.sort(key=lambda x: abs(x["valor_residual"]), reverse=True)
     return resultado
 
@@ -105,32 +279,21 @@ def calcular_nao_classificados(linhas_config, todos_lancamentos, meses_dinamicos
 def somar_omie_categoria(todos_lancamentos, categoria_linha, competencia, ano_alvo, mes_alvo):
     # Se a linha pede uma categoria com sufixo de departamento (ex: "FGTS -
     # MOI"), lançamentos que chegam da Omie já com esse sufixo na categoria
-    # continuam batendo direto (branch de baixo). Além disso, lançamentos da
-    # categoria "base" sem sufixo (ex: "FGTS") entram aqui também, rateados
-    # pelo percentual de cada departamento -- ver DEPARTAMENTO_OMIE_PARA_SUFIXO.
-    base_sem_departamento = None
-    sufixo_alvo = None
-    if " - " in categoria_linha:
-        possivel_base, possivel_sufixo = categoria_linha.rsplit(" - ", 1)
-        if possivel_sufixo in SUFIXOS_DEPARTAMENTO:
-            base_sem_departamento = possivel_base
-            sufixo_alvo = possivel_sufixo
+    # continuam batendo direto. Além disso, lançamentos da categoria "base"
+    # sem sufixo (ex: "FGTS") entram aqui também, rateados pelo percentual
+    # de cada departamento -- ver DEPARTAMENTO_OMIE_PARA_SUFIXO. E, se a
+    # categoria do lançamento vier composta (rateada entre 2+ categorias),
+    # cada parte é tratada separadamente -- ver dividir_categoria_composta.
+    base_sem_departamento, sufixo_alvo = _base_e_sufixo(categoria_linha)
 
     total = 0.0
     for l in todos_lancamentos:
         if l.get("transferenciaInterna"):
             continue
-        cat_norm = normalizar_categoria(l.get("categoria", ""))
         eff = mes_efetivo(l.get("data", ""), competencia)
         if eff != (ano_alvo, mes_alvo):
             continue
-        if cat_norm == categoria_linha:
-            total += l.get("valor", 0) or 0
-        elif sufixo_alvo and cat_norm == base_sem_departamento:
-            rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
-            for d in rateio:
-                if DEPARTAMENTO_OMIE_PARA_SUFIXO.get(d.get("nome")) == sufixo_alvo:
-                    total += (l.get("valor", 0) or 0) * (d.get("percentual", 0) or 0) / 100
+        total += _capturado_para_linha(l, categoria_linha, base_sem_departamento, sufixo_alvo)
     return total
 
 
@@ -154,6 +317,18 @@ def calcular_coluna(linhas_config, todos_lancamentos, ano, mes, manual_faturamen
             valor_por_linha[linha] = -JUROS_EMPRESTIMOS.get(chave_mes, 0)
         elif tipo == "manual_faturamento_kit":
             valor_por_linha[linha] = manual_faturamento.get(chave_mes, {}).get(linha, None)
+        elif tipo == "receita_kit_hibrida":
+            # Até o mes de corte (inclusive), o valor continua vindo da
+            # planilha/fonte manual (MANUAL_FATURAMENTO_KIT) -- dali em
+            # diante, soma automaticamente as categorias da Omie listadas.
+            corte_ano, corte_mes = item["classif"]["automatico_a_partir_de"]
+            if (ano, mes) < (corte_ano, corte_mes):
+                valor_por_linha[linha] = manual_faturamento.get(chave_mes, {}).get(linha, None)
+            else:
+                valor_por_linha[linha] = sum(
+                    somar_omie_categoria(todos_lancamentos, categoria, item["classif"]["competencia"], ano, mes)
+                    for categoria in item["classif"]["categorias"]
+                )
         elif tipo == "manual_folha":
             valor_por_linha[linha] = manual_folha.get(chave_mes, {}).get(linha, None)
         elif tipo == "manual_weg":
@@ -161,13 +336,21 @@ def calcular_coluna(linhas_config, todos_lancamentos, ano, mes, manual_faturamen
         elif tipo in ("vazio", "saldo_inicial_jan"):
             valor_por_linha[linha] = 0
 
-    # linha especial: custo de Kits = -50% * (receita kit + descontos + descontos cartao)
+    # linha especial: custo de Kits. Até o mes de corte, mantem a formula
+    # antiga (-50% * (receita kit + descontos + descontos cartao)); a partir
+    # dali, usa o custo REAL de "Despesas com Kits" somado direto da Omie.
     for item in linhas_config:
         if item["classif"]["tipo"] == "especial_kits_cogs":
-            r7 = valor_por_linha.get(7) or 0
-            r21 = valor_por_linha.get(21) or 0
-            r22 = valor_por_linha.get(22) or 0
-            valor_por_linha[item["linha"]] = -0.5 * (r7 + r21 + r22)
+            corte_ano, corte_mes = item["classif"].get("custo_real_a_partir_de", (9999, 1))
+            if (ano, mes) >= (corte_ano, corte_mes):
+                valor_por_linha[item["linha"]] = somar_omie_categoria(
+                    todos_lancamentos, "Despesas com Kits", "Não se Aplica", ano, mes,
+                )
+            else:
+                r7 = valor_por_linha.get(7) or 0
+                r21 = valor_por_linha.get(21) or 0
+                r22 = valor_por_linha.get(22) or 0
+                valor_por_linha[item["linha"]] = -0.5 * (r7 + r21 + r22)
 
     # passadas seguintes: resolve "combinacao" iterativamente (podem depender
     # de outras combinacoes, entao repete ate estabilizar). Termos ausentes
