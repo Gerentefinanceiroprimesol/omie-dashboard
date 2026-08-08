@@ -45,11 +45,14 @@ def _chave_comparacao(s: str) -> str:
 # departamento) para o sufixo usado nas linhas do DRE/DFC.
 DEPARTAMENTO_OMIE_PARA_SUFIXO = {
     "Comercial": "Comercial",
+    "Comercial Externo": "Comercial",
+    "Comercial Interno": "Comercial",
     "Administrativo": "ADM",
     "Mão de Obra Direta - MOD": "MOD",
     "Mão de Obra Indireta - MOI": "MOI",
+    "Corporativo": "Corporativo",
 }
-SUFIXOS_DEPARTAMENTO = {"MOD", "MOI", "ADM", "Comercial"}
+SUFIXOS_DEPARTAMENTO = {"MOD", "MOI", "ADM", "Comercial", "Corporativo"}
 
 
 def normalizar_categoria(categoria_bruta: str) -> str:
@@ -437,18 +440,18 @@ def montar_linhas_tabela(linhas_config, todos_lancamentos, meses_dinamicos,
             manual_faturamento, manual_folha, manual_weg,
         )
 
-    # "Posição de Caixa Acumulada" (linha 190, só existe no DFC) depende do
+    # "Posição de Caixa Acumulada" (linha 195, só existe no DFC) depende do
     # saldo acumulado do MÊS ANTERIOR + resultado do mês atual -- não dá pra
     # calcular mês a mês isoladamente como as outras linhas. Corrige aqui em
     # cascata, carregando o acumulado de um mês pro próximo.
     labels_por_linha = {item["linha"]: item["label"] for item in linhas_config}
-    if 190 in labels_por_linha and 188 in labels_por_linha:
-        item_190 = next(x for x in linhas_config if x["linha"] == 190)
-        acumulado = item_190["valores"].get("Jun", 0) or 0
+    if 195 in labels_por_linha and 193 in labels_por_linha:
+        item_195 = next(x for x in linhas_config if x["linha"] == 195)
+        acumulado = item_195["valores"].get("Jun", 0) or 0
         for (ano, mes) in meses_dinamicos:
-            resultado_do_mes = colunas_dinamicas[(ano, mes)].get(188) or 0
+            resultado_do_mes = colunas_dinamicas[(ano, mes)].get(193) or 0
             acumulado += resultado_do_mes
-            colunas_dinamicas[(ano, mes)][190] = acumulado
+            colunas_dinamicas[(ano, mes)][195] = acumulado
 
     abrangencias = calcular_abrangencias(linhas_config)  # secao_linha -> (ini, fim)
 
