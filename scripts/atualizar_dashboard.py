@@ -193,6 +193,7 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-grid { display: grid; gap: 14px; grid-template-columns: repeat(4, 1fr); }
   #abaInsights .ins-grid-3 { grid-template-columns: repeat(3, 1fr); }
   #abaInsights .ins-grid-2 { grid-template-columns: 2fr 1fr; }
+  #abaInsights .ins-grid-5 { grid-template-columns: repeat(5, 1fr); }
 
   #abaInsights .ins-card {
     background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -544,6 +545,7 @@ function insSaudeCaixa() {
   const idxAtual = insIndiceMesAtual();
   const mapaPorMes = insAgruparPorMes(todos);
   let somaQueima = 0, mesesContados = 0;
+  const detalheRunway = [];
   for (let i = 1; i <= INSIGHTS_CONFIG.mesesRunway; i++) {
     const idx = idxAtual - i;
     if (idx < 0) continue;
@@ -551,9 +553,15 @@ function insSaudeCaixa() {
     const doMes = mapaPorMes[insChaveMes(am.ano, am.mes)] || [];
     const entradas = doMes.filter(function (l) { return l.valor > 0; }).reduce(function (s, l) { return s + l.valor; }, 0);
     const saidas = doMes.filter(function (l) { return l.valor < 0; }).reduce(function (s, l) { return s + Math.abs(l.valor); }, 0);
-    somaQueima += (saidas - entradas);
+    const queimaLiquida = saidas - entradas;
+    somaQueima += queimaLiquida;
     mesesContados++;
+    detalheRunway.push({
+      nome: DRE_RESUMO.nomesMeses[idx] || insChaveMes(am.ano, am.mes),
+      entradas: entradas, saidas: saidas, queimaLiquida: queimaLiquida,
+    });
   }
+  detalheRunway.reverse(); // mostrar em ordem cronológica (mês mais antigo primeiro)
   const queimaMedia = mesesContados > 0 ? (somaQueima / mesesContados) : 0;
   const runwayMeses = queimaMedia > 0 ? (saldoBancarioAtual / queimaMedia) : null;
 
@@ -562,7 +570,7 @@ function insSaudeCaixa() {
     aPagar: aPagar, listaAPagar: listaAPagar,
     taxaInadimplencia: taxaInadimplencia, listaInadimplentes: listaInadimplentes,
     runwayMeses: runwayMeses, saldoBancarioAtual: saldoBancarioAtual,
-    queimaMedia: queimaMedia, mesesContadosRunway: mesesContados,
+    queimaMedia: queimaMedia, mesesContadosRunway: mesesContados, detalheRunway: detalheRunway,
   };
 }
 
@@ -965,9 +973,6 @@ function renderizarInsights() {
       function pct(v) { return (v !== null && v !== undefined && receita) ? (v / receita * 100) : null; }
       return {
         nome: m.nome,
-        receita: (receita === null || receita === undefined) ? null : receita,
-        lucroBruto: (lb === null || lb === undefined) ? null : lb,
-        ebitda: (eb === null || eb === undefined) ? null : eb,
         margemBruta: pct(lb),
         margemEbitda: pct(eb),
         margemLiquida: pct(ll),
@@ -986,33 +991,16 @@ function renderizarInsights() {
     return v !== null ? '<span class="' + insClasseVariacao(v) + '">' + fmtMoeda(v) + '</span>' : '<span class="ins-neutro">—</span>';
   }
 
-  function insSomaSimples(lista) {
-    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
-    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) : null;
-  }
-
   const rentabilidadeSerie = insRentabilidadeMensal();
   const mediaMB = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemBruta; }));
   const mediaME = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemEbitda; }));
   const mediaML = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.margemLiquida; }));
   const mediaLL = insMediaSimples(rentabilidadeSerie.map(function (r) { return r.lucroLiquido; }));
 
-  // Acumulado != média simples dos percentuais -- é a soma do numerador (ex:
-  // Lucro Bruto) dividida pela soma do denominador (Receita) do período
-  // inteiro, senão um mês pequeno pesa igual a um mês grande e distorce o
-  // resultado. Lucro Líquido acumulado é simplesmente a soma dos meses (o
-  // mesmo total do card de Lucro Líquido acumulado no topo do Insights).
-  const receitaAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.receita; }));
-  const lbAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.lucroBruto; }));
-  const ebAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.ebitda; }));
-  const llAcum = insSomaSimples(rentabilidadeSerie.map(function (r) { return r.lucroLiquido; }));
-  const margemAcum = function (v) { return (v !== null && receitaAcum) ? (v / receitaAcum * 100) : null; };
-
   const linhasRentabilidadeMensal = rentabilidadeSerie.map(function (r) {
     return '<tr><td>' + r.nome + '</td><td>' + celRentabPct(r.margemBruta) + '</td><td>' + celRentabPct(r.margemEbitda) + '</td><td>' + celRentabPct(r.margemLiquida) + '</td><td>' + celRentabMoeda(r.lucroLiquido) + '</td></tr>';
   }).join('') +
-    '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>' +
-    '<tr><td><strong>Acumulado</strong></td><td>' + celRentabPct(margemAcum(lbAcum)) + '</td><td>' + celRentabPct(margemAcum(ebAcum)) + '</td><td>' + celRentabPct(margemAcum(llAcum)) + '</td><td><strong>' + celRentabMoeda(llAcum) + '</strong></td></tr>';
+    '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>';
 
   const rentabilidadeMensalHtml = '<div class="ins-card ins-rentab-card">' +
     '<div class="ins-kpi-label">Rentabilidade Mês a Mês</div>' +
@@ -1044,10 +1032,32 @@ function renderizarInsights() {
     runwayValorHtml = '<span style="color:var(--green)">Caixa crescendo</span>';
     runwayDeltaHtml = '+' + fmtMoeda(crescimentoMedio) + '/mês em média, nos últimos ' + saude.mesesContadosRunway + ' meses (entradas > saídas)';
   }
+  const linhasDetalheRunway = saude.detalheRunway.map(function (m) {
+    return '<tr><td>' + m.nome + '</td>' +
+      '<td class="valor-col" style="color:var(--green)">' + fmtMoeda(m.entradas) + '</td>' +
+      '<td class="valor-col" style="color:var(--red)">-' + fmtMoeda(m.saidas) + '</td>' +
+      '<td class="valor-col">' + (m.queimaLiquida >= 0 ? fmtMoeda(m.queimaLiquida) : '<span style="color:var(--green)">' + fmtMoeda(m.queimaLiquida) + '</span>') + '</td></tr>';
+  }).join('');
+  const detalheRunwayHtml = saude.mesesContadosRunway === 0 ? '' :
+    '<div style="padding-top:10px;border-top:1px solid var(--border);margin-top:10px;font-size:12.5px;">' +
+    '<div style="margin-bottom:8px;color:var(--text-muted);">Saldo bancário atual (todas as contas banco, na data de hoje): <strong style="color:var(--text)">' + fmtMoeda(saude.saldoBancarioAtual) + '</strong></div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Entradas</th><th>Saídas</th><th>Queima líquida (saídas − entradas)</th></tr></thead>' +
+    '<tbody>' + linhasDetalheRunway + '</tbody></table>' +
+    '<div style="margin-top:10px;color:var(--text-muted);">' +
+    'Queima média = soma da queima líquida dos ' + saude.mesesContadosRunway + ' meses ÷ ' + saude.mesesContadosRunway + ' = <strong style="color:var(--text)">' + fmtMoeda(saude.queimaMedia) + '/mês</strong>' +
+    '</div>' +
+    '<div style="margin-top:6px;color:var(--text-muted);">' +
+    'Runway = saldo bancário ÷ queima média = ' + fmtMoeda(saude.saldoBancarioAtual) + ' ÷ ' + fmtMoeda(saude.queimaMedia) +
+    ' = <strong style="color:var(--text)">' + (saude.runwayMeses !== null ? saude.runwayMeses.toFixed(1) + ' meses' : '—') + '</strong>' +
+    '</div></div>';
   const saudeHtml = '<div class="ins-grid">' +
-    '<div class="ins-card"><div class="ins-kpi-label">Runway de Caixa</div>' +
+    '<div class="ins-card' + (saude.mesesContadosRunway > 0 ? ' ins-clickable' : '') + '"' +
+    (saude.mesesContadosRunway > 0 ? ' onclick="toggleDetalheInsight(' + "'insDetalheRunway'" + ')"' : '') + '>' +
+    '<div class="ins-kpi-label">Runway de Caixa</div>' +
     '<div class="ins-kpi-value">' + runwayValorHtml + '</div>' +
-    '<div class="ins-delta ins-neutro">' + runwayDeltaHtml + '</div></div>' +
+    '<div class="ins-delta ins-neutro">' + runwayDeltaHtml + '</div>' +
+    '<div class="ins-detail-panel" id="insDetalheRunway">' + detalheRunwayHtml + '</div>' +
+    '</div>' +
 
     '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalheReceber'" + ')">' +
     '<div class="ins-kpi-label">A Receber (em aberto)</div>' +
@@ -1320,7 +1330,7 @@ function renderizarInsights() {
     '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
     (despesasFixasPctPeriodo !== null ? despesasFixasPctPeriodo.toFixed(1) + '%' : '—') + '</td></tr>';
 
-  const indicadoresHtml = '<div class="ins-grid">' +
+  const indicadoresHtml = '<div class="ins-grid ins-grid-5">' +
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (ticketMedioMedia !== null ? fmtMoeda(ticketMedioMedia) : '—') + '</div>' +
@@ -1954,11 +1964,17 @@ def montar_alerta_nao_classificados_html(itens: list, id_prefixo: str) -> str:
     if not itens:
         return ""
     total_residual = sum(i["valor_residual"] for i in itens)
+
+    def celula_sugestao(i):
+        if i.get("sugestao"):
+            return f'<td><span style="color:var(--cyan)">💡 {htmllib.escape(i["sugestao"])}</span> <span style="color:var(--text-faint)">({i["sugestao_parecido_pct"]:.0f}% parecido)</span></td>'
+        return "<td>—</td>"
+
     linhas_tabela = "".join(
         f'<tr><td>{i["data"]}</td><td>{htmllib.escape(i["empresa"])}</td>'
         f'<td>{htmllib.escape(i["categoria"])}</td><td>{htmllib.escape(i["departamento"])}</td>'
         f'<td>{htmllib.escape(i["cliente"])}</td>'
-        f'<td class="valor">{formatar_valor_dre_dfc(i["valor_residual"])}</td></tr>'
+        f'<td class="valor">{formatar_valor_dre_dfc(i["valor_residual"])}</td>{celula_sugestao(i)}</tr>'
         for i in itens
     )
     return f"""
@@ -1972,7 +1988,7 @@ def montar_alerta_nao_classificados_html(itens: list, id_prefixo: str) -> str:
       <div class="ins-detail-panel" id="{id_prefixo}ListaNC">
         <div style="padding-top:8px;border-top:1px solid rgba(250,168,33,0.3);margin-top:8px;overflow-x:auto;">
           <table class="drilldown-tabela">
-            <thead><tr><th>Data</th><th>Empresa</th><th>Categoria</th><th>Departamento</th><th>Cliente/Fornecedor</th><th>Valor não classificado</th></tr></thead>
+            <thead><tr><th>Data</th><th>Empresa</th><th>Categoria</th><th>Departamento</th><th>Cliente/Fornecedor</th><th>Valor não classificado</th><th>Sugestão de correção</th></tr></thead>
             <tbody>{linhas_tabela}</tbody>
           </table>
         </div>
@@ -2424,6 +2440,11 @@ def gerar_html(contas: list) -> str:
   section > div:first-child h2 {{ margin-top: 8px; }}
 
   .tabela-wrap {{ overflow-x: auto; border-radius: var(--radius-sm); }}
+  #tabelaWrap {{ overflow-y: auto; max-height: 65vh; border: 1px solid var(--border); }}
+  #tabelaWrap th {{
+    position: sticky; top: 0; z-index: 2; background: var(--bg-panel);
+    border-bottom: 2px solid var(--laranja); color: var(--text); font-weight: 700;
+  }}
   .scroll-topo-wrap {{ overflow-x: auto; overflow-y: hidden; height: 14px; margin-bottom: 2px; }}
   .scroll-topo-inner {{ height: 1px; }}
   table {{ table-layout: fixed; border-collapse: collapse; margin-bottom: 8px; font-size: 12.5px; background: var(--bg-panel); }}
@@ -3050,6 +3071,7 @@ function valorOrdenacao(l, colKey) {{
     case 'empresa': return (l.empresaNome || '').toLowerCase();
     case 'observacao': return (l.observacao || '').toLowerCase();
     case 'situacaoTitulo': return (l.situacaoTitulo || '').toLowerCase();
+    case 'custoFixoVariavel': return (lancClassificarCusto(l) || '').toLowerCase();
     default: return '';
   }}
 }}
