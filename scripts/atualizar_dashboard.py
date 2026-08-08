@@ -1334,7 +1334,7 @@ function renderizarInsights() {
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (ticketMedioMedia !== null ? fmtMoeda(ticketMedioMedia) : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + numeroVendasMedia.toFixed(1) + ' venda(s)/mês · ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + numeroVendasMedia.toFixed(1) + ' venda(s)/mês · ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + ' · clique pra detalhar</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ticket Médio</th><th>Nº Vendas</th></tr></thead><tbody>' + linhasTicketMedio + '</tbody></table>' +
     '</div></div>' +
@@ -1342,7 +1342,7 @@ function renderizarInsights() {
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Comissão sobre a Receita (Média) <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (comissaoMedia !== null ? comissaoMedia.toFixed(1) + '%' : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (comissaoValidos.length > 0 ? 'média de ' + comissaoValidos.length + ' mês(es)' : 'sem dado de comissão') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (comissaoValidos.length > 0 ? 'média de ' + comissaoValidos.length + ' mês(es)' : 'sem dado de comissão') + ' · clique pra detalhar</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasComissao + '</tbody></table>' +
     '</div></div>' +
@@ -1350,7 +1350,7 @@ function renderizarInsights() {
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Despesas Fixas / Receita (Média) <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (despesasFixasMedia !== null ? despesasFixasMedia.toFixed(1) + '%' : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">' + (despesasFixasValidos.length > 0 ? 'média de ' + despesasFixasValidos.length + ' mês(es)' : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (despesasFixasValidos.length > 0 ? 'média de ' + despesasFixasValidos.length + ' mês(es)' : '—') + ' · clique pra detalhar</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasDespesasFixas + '</tbody></table>' +
     '</div></div>' +
@@ -2109,10 +2109,10 @@ def gerar_html(contas: list) -> str:
     # esse campo -- é só anexado no JS pro resto do dashboard).
     lancamentos_com_empresa = [dict(l, empresa=c["empresa"]) for c in contas for l in c["lancamentos"]]
 
-    # No DFC, tudo depois de "Posição de Caixa Acumulada" (linha 190) é só
+    # No DFC, tudo depois de "Posição de Caixa Acumulada" (linha 195) é só
     # conferência interna (Saldo inicial, Entrada/Saída/Líquido de Extratos,
     # Check) -- não faz parte do relatório em si, então não exibimos.
-    dfc_linhas_visiveis = [x for x in DFC_LINHAS if x["linha"] <= 190]
+    dfc_linhas_visiveis = [x for x in DFC_LINHAS if x["linha"] <= 195]
 
     # "Prova dos 9": lançamentos (Jul/2026 em diante) cujo valor não bateu
     # 100% com nenhuma linha do respectivo relatório -- vira um alerta
@@ -2364,6 +2364,11 @@ def gerar_html(contas: list) -> str:
     font-size: 12px; color: var(--laranja);
   }}
   .dre-pendente {{ color: var(--cyan); font-style: italic; font-size: 10.5px; }}
+  .dd-tag-rateio {{
+    display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+    background: rgba(65,105,232,0.18); border: 1px solid var(--accent); color: var(--accent-hover);
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; cursor: help;
+  }}
 
   .saldo-total-wrap {{ padding: 14px 32px 0; }}
   .saldo-total-linha {{ display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }}
@@ -2679,6 +2684,103 @@ function dreMesEfetivo(dataBr, competencia) {{
   return {{ ano, mes }};
 }}
 
+// ---- Rateio por departamento: MESMA lógica de engine_dre_dfc.py
+// (_chave_comparacao, dividir_categoria_composta, _base_e_sufixo,
+// _capturado_para_linha). Sem isso, o drill-down não encontrava os
+// lançamentos de linhas tipo "Vale Alimentação - MOI" etc -- que não têm
+// essa categoria "crua" na Omie, e sim a categoria BASE ("Vale
+// Alimentação") ratada entre departamentos, capturada só em parte por
+// cada linha. Ver o comentário equivalente em engine_dre_dfc.py.
+const DD_DEPARTAMENTO_OMIE_PARA_SUFIXO = {{
+  'Comercial': 'Comercial',
+  'Comercial Externo': 'Comercial',
+  'Comercial Interno': 'Comercial',
+  'Administrativo': 'ADM',
+  'Mão de Obra Direta - MOD': 'MOD',
+  'Mão de Obra Indireta - MOI': 'MOI',
+  'Corporativo': 'Corporativo',
+}};
+const DD_SUFIXOS_DEPARTAMENTO = new Set(['MOD', 'MOI', 'ADM', 'Comercial', 'Corporativo']);
+
+function ddChaveComparacao(s) {{
+  return (s || '').toString().trim().toLowerCase()
+    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/\\s+/g, ' ');
+}}
+
+function ddSufixoDepartamento(nomeDepartamento) {{
+  const chave = ddChaveComparacao(nomeDepartamento);
+  for (const nomeOmie in DD_DEPARTAMENTO_OMIE_PARA_SUFIXO) {{
+    if (ddChaveComparacao(nomeOmie) === chave) return DD_DEPARTAMENTO_OMIE_PARA_SUFIXO[nomeOmie];
+  }}
+  return null;
+}}
+
+function ddBaseESufixo(categoriaLinha) {{
+  const idx = categoriaLinha.lastIndexOf(' - ');
+  if (idx === -1) return [null, null];
+  const base = categoriaLinha.slice(0, idx);
+  const sufixo = categoriaLinha.slice(idx + 3);
+  return DD_SUFIXOS_DEPARTAMENTO.has(sufixo) ? [base, sufixo] : [null, null];
+}}
+
+function ddDividirCategoriaComposta(categoriaBruta) {{
+  const bruta = (categoriaBruta || '').trim();
+  if (!bruta) return [['-', 1.0]];
+  let partesBrutas = bruta.split(';').map(p => p.trim()).filter(Boolean);
+  if (!partesBrutas.length) partesBrutas = [bruta];
+
+  const partesComPct = partesBrutas.map(parte => {{
+    const semInativa = parte.replace(/\\s*\\(inativ[ao]\\)/i, '').trim();
+    const m = semInativa.match(/\\(([\\d.,]+)\\s*%\\)\\s*$/);
+    if (m) {{
+      const pctStr = m[1];
+      const pct = pctStr.includes(',') ? parseFloat(pctStr.replace(/\\./g, '').replace(',', '.')) : parseFloat(pctStr);
+      const categoriaLimpa = semInativa.replace(/\\(([\\d.,]+)\\s*%\\)\\s*$/, '').trim();
+      return [categoriaLimpa, pct];
+    }}
+    return [semInativa, null];
+  }});
+
+  const temAlgumPct = partesComPct.some(p => p[1] !== null);
+  let pesos;
+  if (temAlgumPct) {{
+    const somaPct = partesComPct.reduce((s, p) => s + (p[1] !== null ? p[1] : 0), 0);
+    const nSemPct = partesComPct.filter(p => p[1] === null).length;
+    const pctRestante = nSemPct ? Math.max(0, 100 - somaPct) / nSemPct : 0;
+    pesos = partesComPct.map(p => [p[0], (p[1] !== null ? p[1] : pctRestante) / 100]);
+  }} else {{
+    const pesoIgual = 1.0 / partesComPct.length;
+    pesos = partesComPct.map(p => [p[0], pesoIgual]);
+  }}
+  return pesos.map(p => [dreNormalizarCategoria(p[0]), p[1]]);
+}}
+
+function ddCapturadoParaLinha(l, categoriaLinha, baseSemDepartamento, sufixoAlvo) {{
+  const valorTotal = l.valor || 0;
+  const chaveCategoriaLinha = ddChaveComparacao(categoriaLinha);
+  const chaveBase = baseSemDepartamento ? ddChaveComparacao(baseSemDepartamento) : null;
+  let capturado = 0;
+  ddDividirCategoriaComposta(l.categoria).forEach(function (par) {{
+    const catNorm = par[0], peso = par[1];
+    const valorParte = valorTotal * peso;
+    const chaveCat = ddChaveComparacao(catNorm);
+    if (chaveCat === chaveCategoriaLinha) {{
+      capturado += valorParte;
+    }} else if (sufixoAlvo && chaveCat === chaveBase) {{
+      const rateio = (l.departamentosRateio && l.departamentosRateio.length)
+        ? l.departamentosRateio
+        : [{{ nome: l.departamento || '-', percentual: 100 }}];
+      rateio.forEach(function (d) {{
+        if (ddSufixoDepartamento(d.nome) === sufixoAlvo) {{
+          capturado += valorParte * (d.percentual || 0) / 100;
+        }}
+      }});
+    }}
+  }});
+  return capturado;
+}}
+
 // ---- Tabela interativa do modal de drill-down (DRE/DFC) -- mesmas
 // funcionalidades da tabela de Lançamentos (ordenar, filtro estilo Excel,
 // redimensionar colunas, rolagem dupla), mas com estado próprio (prefixo
@@ -2691,7 +2793,7 @@ const DD_COLUNAS = [
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente || '-' }},
   {{ key: 'departamento', label: 'Departamento', get: l => l.departamento || '-' }},
   {{ key: 'observacao', label: 'Observação', get: l => l.observacao || '-' }},
-  {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor || 0) }},
+  {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l._valorCapturado !== undefined ? l._valorCapturado : (l.valor || 0)) }},
 ];
 const DD_LARGURA_PADRAO = {{
   data: 110, empresa: 150, conta: 140, cliente: 190, departamento: 130, observacao: 260, valor: 120,
@@ -2706,7 +2808,7 @@ let ddAvisoManualAtual = '';
 
 function ddValorOrdenacao(l, colKey) {{
   switch (colKey) {{
-    case 'valor': return l.valor || 0;
+    case 'valor': return l._valorCapturado !== undefined ? l._valorCapturado : (l.valor || 0);
     case 'data': return paraDataISO(l.data) || '';
     case 'cliente': return (l.cliente || '').toLowerCase();
     case 'departamento': return (l.departamento || '').toLowerCase();
@@ -2812,7 +2914,7 @@ function ddRenderizarTabela() {{
     return;
   }}
 
-  const total = filtrados.reduce((s, l) => s + (l.valor || 0), 0);
+  const total = filtrados.reduce((s, l) => s + (l._valorCapturado !== undefined ? l._valorCapturado : (l.valor || 0)), 0);
 
   const headerHtml = DD_COLUNAS.map(col => {{
     const ativo = ddColFiltros[col.key] ? 'ativo' : '';
@@ -2833,17 +2935,23 @@ function ddRenderizarTabela() {{
     (soma, col) => soma + (ddColWidths[col.key] || DD_LARGURA_PADRAO[col.key] || 150), 0
   );
 
-  const linhasHtml = filtrados.map(l => `
+  const linhasHtml = filtrados.map(l => {{
+    const valorExibido = l._valorCapturado !== undefined ? l._valorCapturado : (l.valor || 0);
+    const marcaRateio = l._ehRateio
+      ? ` <span class="dd-tag-rateio" title="Este lançamento é rateado por departamento -- valor mostrado é só a fração desta linha. Valor total do lançamento: ${{fmtMoeda(l.valor || 0)}}">rateado</span>`
+      : '';
+    return `
     <tr>
       <td>${{l.data || '-'}}</td>
       <td>${{l.empresaNome || '-'}}</td>
       <td>${{l.contaNome || '-'}}</td>
       <td>${{l.cliente || '-'}}</td>
-      <td>${{l.departamento || '-'}}</td>
+      <td>${{l.departamento || '-'}}${{marcaRateio}}</td>
       <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao || '-'}}</td>
-      <td class="valor">${{fmtMoeda(l.valor || 0)}}</td>
+      <td class="valor">${{fmtMoeda(valorExibido)}}</td>
     </tr>
-  `).join('');
+  `;
+  }}).join('');
 
   corpo.innerHTML = ddAvisoManualAtual + `
     <div class="scroll-topo-wrap" id="ddScrollTopoWrap">
@@ -2952,20 +3060,43 @@ document.addEventListener('mouseup', () => {{
 
 function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, tituloLinha) {{
   const todos = insTodosLancamentos();
-  const filtrados = todos.filter(function (l) {{
-    if (dreNormalizarCategoria(l.categoria) !== categoriaAlvo) return false;
-    const eff = dreMesEfetivo(l.data, competencia);
-    return eff && eff.ano === ano && eff.mes === mes;
-  }});
+  const [baseSemDepartamento, sufixoAlvo] = ddBaseESufixo(categoriaAlvo);
+
+  const filtrados = todos
+    .filter(function (l) {{
+      if (l.transferenciaInterna) return false;
+      const eff = dreMesEfetivo(l.data, competencia);
+      if (!eff || eff.ano !== ano || eff.mes !== mes) return false;
+      const capturado = ddCapturadoParaLinha(l, categoriaAlvo, baseSemDepartamento, sufixoAlvo);
+      return Math.abs(capturado) > 0.01;
+    }})
+    .map(function (l) {{
+      const capturado = ddCapturadoParaLinha(l, categoriaAlvo, baseSemDepartamento, sufixoAlvo);
+      const bateDireto = ddChaveComparacao(dreNormalizarCategoria(l.categoria)) === ddChaveComparacao(categoriaAlvo);
+      return Object.assign({{}}, l, {{ _valorCapturado: capturado, _ehRateio: !bateDireto }});
+    }});
 
   const nomesMes = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const ehManual = (ano < 2026) || (ano === 2026 && mes < 7);
   document.getElementById('drillDownTitulo').textContent = tituloLinha;
 
   ddTituloAtual = `${{nomesMes[mes - 1]}}/${{ano}} — categoria "${{categoriaAlvo}}"`;
-  ddAvisoManualAtual = ehManual
-    ? '<div class="drilldown-aviso">⚠️ O valor dessa célula foi digitado manualmente (cópia da planilha antiga) — a soma dos lançamentos abaixo vem direto da Omie e pode não bater exatamente com ele.</div>'
-    : '';
+
+  const avisos = [];
+  if (ehManual) {{
+    avisos.push('<div class="drilldown-aviso">⚠️ O valor dessa célula foi digitado manualmente (cópia da planilha antiga) — a soma dos lançamentos abaixo vem direto da Omie e pode não bater exatamente com ele.</div>');
+  }}
+  if (sufixoAlvo) {{
+    const totalRateado = filtrados.reduce((s, l) => s + (l._valorCapturado || 0), 0);
+    avisos.push(
+      '<div class="drilldown-aviso">ℹ️ Esta conta é rateada por departamento: a categoria na Omie é '
+      + `"<strong>${{baseSemDepartamento}}</strong>", dividida entre setores (Comercial/ADM/MOD/MOI/Corporativo) `
+      + `conforme o rateio de cada lançamento — abaixo só a fração "${{sufixoAlvo}}" de cada um. `
+      + `Valor total desta linha no mês: <strong>${{fmtMoeda(totalRateado)}}</strong>. `
+      + 'A coluna "Departamento" mostra o rateio completo (todos os setores) de cada lançamento.</div>'
+    );
+  }}
+  ddAvisoManualAtual = avisos.join('');
   ddDadosBase = filtrados;
   ddColFiltros = {{}};
   ddColWidths = {{}};
