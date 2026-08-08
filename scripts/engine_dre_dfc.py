@@ -9,6 +9,25 @@ from dre_dfc_dados import DE_PARA, DRE_LINHAS, DFC_LINHAS, JUROS_EMPRESTIMOS, \
 
 MESES_ABREV = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
+# Algumas categorias do Omie (ex: "FGTS", "Salários", "Plano de Saúde") chegam
+# sem indicar o departamento -- o valor é um único lançamento que precisa ser
+# dividido entre os departamentos conforme o rateio (mesmo dado já usado na
+# aba Lançamentos). O DRE/DFC, por sua vez, tem uma linha separada por
+# departamento (ex: "Salários - MOD", "Salários - ADM"...), usando as siglas
+# MOD/MOI/ADM ou "Comercial" como sufixo. Esse de-para traduz o nome do
+# departamento tal como cadastrado no Omie (confirmado em 08/2026 via
+# ListarDepartamentos nas 4 empresas -- Matriz, Lagos e Cabo Frio usam os
+# mesmos nomes; PS Energia não tem departamento cadastrado, então lançamentos
+# de lá com categoria sem sufixo não entram em nenhuma linha por
+# departamento) para o sufixo usado nas linhas do DRE/DFC.
+DEPARTAMENTO_OMIE_PARA_SUFIXO = {
+    "Comercial": "Comercial",
+    "Administrativo": "ADM",
+    "Mão de Obra Direta - MOD": "MOD",
+    "Mão de Obra Indireta - MOI": "MOI",
+}
+SUFIXOS_DEPARTAMENTO = {"MOD", "MOI", "ADM", "Comercial"}
+
 
 def normalizar_categoria(categoria_bruta: str) -> str:
     return DE_PARA.get((categoria_bruta or "").strip(), (categoria_bruta or "").strip())
@@ -32,17 +51,86 @@ def mes_efetivo(data_br: str, competencia: str):
     return (ano, mes)
 
 
+def calcular_nao_classificados(linhas_config, todos_lancamentos, meses_dinamicos):
+    """'Prova dos 9': para cada lançamento (fora transferência interna, e com
+    data real dentro dos meses dinâmicos -- Jan-Jun/2026 é estático, copiado
+    da planilha, fora do escopo dessa conferência automática), verifica se o
+    valor foi 100% capturado por alguma linha omie_categoria de linhas_config
+    (batendo direto pela categoria, ou pela categoria "base" ratada por
+    departamento -- ver DEPARTAMENTO_OMIE_PARA_SUFIXO). O que sobrar
+    (positivo = dinheiro que não caiu em nenhuma linha; negativo = caiu em
+    mais de uma linha por engano) é devolvido pra virar o alerta na tela.
+    Não depende de competência/mês de cada linha -- é uma checagem de
+    COBERTURA de categoria, não de valor por mês (que seria distorcido pelas
+    linhas com competência "Mês Anterior")."""
+    meses_validos = set(meses_dinamicos)
+    linhas_omie = [item for item in linhas_config if item["classif"]["tipo"] == "omie_categoria"]
+
+    resultado = []
+    for l in todos_lancamentos:
+        if l.get("transferenciaInterna"):
+            continue
+        eff_real = mes_efetivo(l.get("data", ""), "Mesmo Mês")
+        if eff_real not in meses_validos:
+            continue
+        valor = l.get("valor", 0) or 0
+        cat_norm = normalizar_categoria(l.get("categoria", ""))
+        capturado = 0.0
+        for item in linhas_omie:
+            categoria_linha = item["classif"]["categoria"]
+            if cat_norm == categoria_linha:
+                capturado += valor
+                continue
+            if " - " in categoria_linha:
+                base, sufixo = categoria_linha.rsplit(" - ", 1)
+                if sufixo in SUFIXOS_DEPARTAMENTO and cat_norm == base:
+                    rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
+                    for d in rateio:
+                        if DEPARTAMENTO_OMIE_PARA_SUFIXO.get(d.get("nome")) == sufixo:
+                            capturado += valor * (d.get("percentual", 0) or 0) / 100
+        residual = valor - capturado
+        if abs(residual) > 0.01:
+            resultado.append({
+                "data": l.get("data", ""),
+                "empresa": l.get("empresa", "-"),
+                "categoria": l.get("categoria", "-") or "-",
+                "departamento": l.get("departamento", "-"),
+                "cliente": l.get("cliente", "-"),
+                "valor_residual": residual,
+            })
+    resultado.sort(key=lambda x: abs(x["valor_residual"]), reverse=True)
+    return resultado
+
+
 def somar_omie_categoria(todos_lancamentos, categoria_linha, competencia, ano_alvo, mes_alvo):
+    # Se a linha pede uma categoria com sufixo de departamento (ex: "FGTS -
+    # MOI"), lançamentos que chegam da Omie já com esse sufixo na categoria
+    # continuam batendo direto (branch de baixo). Além disso, lançamentos da
+    # categoria "base" sem sufixo (ex: "FGTS") entram aqui também, rateados
+    # pelo percentual de cada departamento -- ver DEPARTAMENTO_OMIE_PARA_SUFIXO.
+    base_sem_departamento = None
+    sufixo_alvo = None
+    if " - " in categoria_linha:
+        possivel_base, possivel_sufixo = categoria_linha.rsplit(" - ", 1)
+        if possivel_sufixo in SUFIXOS_DEPARTAMENTO:
+            base_sem_departamento = possivel_base
+            sufixo_alvo = possivel_sufixo
+
     total = 0.0
     for l in todos_lancamentos:
         if l.get("transferenciaInterna"):
             continue
         cat_norm = normalizar_categoria(l.get("categoria", ""))
-        if cat_norm != categoria_linha:
-            continue
         eff = mes_efetivo(l.get("data", ""), competencia)
-        if eff == (ano_alvo, mes_alvo):
+        if eff != (ano_alvo, mes_alvo):
+            continue
+        if cat_norm == categoria_linha:
             total += l.get("valor", 0) or 0
+        elif sufixo_alvo and cat_norm == base_sem_departamento:
+            rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
+            for d in rateio:
+                if DEPARTAMENTO_OMIE_PARA_SUFIXO.get(d.get("nome")) == sufixo_alvo:
+                    total += (l.get("valor", 0) or 0) * (d.get("percentual", 0) or 0) / 100
     return total
 
 
