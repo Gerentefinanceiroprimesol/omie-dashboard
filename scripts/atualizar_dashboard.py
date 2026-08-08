@@ -91,6 +91,25 @@ def extrair_linha_dre(linhas: list, label_alvo: str) -> list:
     return [None] * tamanho
 
 
+def montar_nomes_meses(meses_dinamicos: list) -> list:
+    """Monta a lista de rótulos de mês (Jan-Jun estáticos + os meses
+    dinâmicos calculados), sempre só com a abreviação de 3 letras, sem ano
+    -- padronizado em 06/08/2026 pra não ter mais "Jan", "Fev"... (sem ano,
+    meses estáticos) misturado com "Jul/2026", "Ago/2026"... (com ano,
+    meses dinâmicos) na mesma tabela. Usada tanto pela tabela DRE/DFC
+    quanto pela Insights, pra não ter esse formato duplicado (e poder ficar
+    dessincronizado de novo) em dois lugares do código.
+
+    Atenção: sem o ano, "Jan" de 2026 e um eventual "Jan" de 2027 (se o
+    dashboard continuar rodando até lá) ficariam com o mesmo rótulo na
+    tabela. Combinado com o Fabrício que essa ambiguidade é aceitável por
+    ora -- o Fabrício prefere a tabela mais limpa sem o ano."""
+    nomes_base = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    return [nomes_base[i] for i in range(6)] + [
+        nomes_base[m - 1] for (a, m) in meses_dinamicos
+    ]
+
+
 def montar_resumo_dre(linhas_dre: list, nomes_meses: list, meses_dinamicos: list, manual_faturamento: dict) -> dict:
     """Monta o resumo mensal de Receita Bruta, Lucro Bruto, EBITDA, Lucro
     Líquido e Comissões, extraído das linhas já calculadas da DRE -- os
@@ -157,11 +176,16 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-hero {
     background: linear-gradient(135deg, rgba(250,168,33,.12), rgba(54,91,221,.12));
     border: 1px solid var(--laranja); border-radius: var(--radius);
-    padding: 20px 24px; display: flex; justify-content: space-between;
-    align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 8px;
+    padding: 20px 24px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s;
+  }
+  #abaInsights .ins-hero:hover { border-color: #ffbf4d; }
+  #abaInsights .ins-hero-top {
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px;
   }
   #abaInsights .ins-hero-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
-  #abaInsights .ins-hero-value { font-size: 32px; font-weight: 800; color: var(--laranja); }
+  #abaInsights .ins-hero-value { font-size: 32px; font-weight: 800; color: var(--laranja); line-height: 1.1; }
+  #abaInsights .ins-hero-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
   #abaInsights .ins-hero-stats { display: flex; gap: 26px; flex-wrap: wrap; }
   #abaInsights .ins-hero-stat .l { font-size: 11px; color: var(--text-muted); }
   #abaInsights .ins-hero-stat .v { font-size: 16px; font-weight: 700; }
@@ -542,6 +566,57 @@ function insSaudeCaixa() {
   };
 }
 
+// ---- Aging de Recebíveis ----
+// Quebra TODOS os títulos de Contas a Receber ainda não liquidados (não só
+// os "próximos X dias" que o card de A Receber usa) em faixas de atraso --
+// o KPI de cobrança mais citado em qualquer material sobre gestão de
+// recebíveis, porque "R$ 300 mil a receber" pode estar tudo saudável ou
+// tudo podre, e o card de A Receber sozinho não mostra essa diferença.
+//
+// Calculado por DATA (hoje − data do título), não pelo texto de Situação
+// -- o texto "ATRASADO" às vezes não vem preenchido (ver o caso do
+// Rosemiro, investigado em 06/08/2026), então contar por data é mais
+// confiável que depender só do rótulo de status.
+function insAgingRecebiveis() {
+  const hoje = new Date();
+  const hojeSemHora = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+  const todos = insTodosLancamentos();
+
+  const buckets = [
+    { chave: 'aVencer', label: 'A Vencer', valor: 0, qtd: 0 },
+    { chave: 'b30', label: 'Até 30 dias', valor: 0, qtd: 0 },
+    { chave: 'b60', label: '31 a 60 dias', valor: 0, qtd: 0 },
+    { chave: 'b90', label: '61 a 90 dias', valor: 0, qtd: 0 },
+    { chave: 'b90mais', label: 'Mais de 90 dias', valor: 0, qtd: 0 },
+  ];
+  const [aVencer, b30, b60, b90, b90mais] = buckets;
+
+  todos.forEach(function (l) {
+    if (l.natureza !== 'Contas a Receber') return;
+    const statusUpper = (l.situacaoTitulo || '').toUpperCase();
+    const jaLiquidado = statusUpper === 'PAGO' || statusUpper === 'RECEBIDO';
+    if (jaLiquidado) return;
+    const iso = paraDataISO(l.data);
+    if (!iso) return;
+    const partes = iso.split('-').map(Number);
+    const dataTitulo = new Date(partes[0], partes[1] - 1, partes[2]);
+    const diasAtraso = Math.round((hojeSemHora - dataTitulo) / (1000 * 60 * 60 * 24));
+
+    let bucket;
+    if (diasAtraso <= 0) bucket = aVencer;
+    else if (diasAtraso <= 30) bucket = b30;
+    else if (diasAtraso <= 60) bucket = b60;
+    else if (diasAtraso <= 90) bucket = b90;
+    else bucket = b90mais;
+
+    bucket.valor += Math.abs(l.valor);
+    bucket.qtd += 1;
+  });
+
+  const total = buckets.reduce(function (s, b) { return s + b.valor; }, 0);
+  return { buckets: buckets, total: total };
+}
+
 function insComparativoEmpresas() {
   const idxAtual = insIndiceMesAtual();
   const am = insAnoMesPorIndice(idxAtual);
@@ -563,14 +638,6 @@ function insComparativoEmpresas() {
     const v = porEmpresa[nome];
     return { nome: nome, receita: v.receita, despesa: v.despesa, resultado: v.receita + v.despesa };
   }).sort(function (a, b) { return b.receita - a.receita; });
-}
-
-function insFaturamentoMensal() {
-  const meses = insListaMesesAteAtual();
-  return meses.map(function (m) {
-    const valor = DRE_RESUMO.receitaBruta[m.indice];
-    return { nome: m.nome, indice: m.indice, valor: (valor === null || valor === undefined) ? null : valor };
-  });
 }
 
 // ---- Faturamento por Empresa ----
@@ -756,11 +823,65 @@ function renderizarInsights() {
 
   const custos = insCalcularSeriesCusto();
   const saude = insSaudeCaixa();
+  const aging = insAgingRecebiveis();
   const comparativo = insComparativoEmpresas();
-  const faturamentoSerie = insFaturamentoMensal();
   const topCategorias = insTopCategoriasDespesa();
   const deptoMaiorAlta = insDepartamentoMaiorAlta();
   const contasBaixas = insContasSaldoBaixo();
+
+  // ---- Faturamento por Empresa (calculado aqui em cima porque o hero
+  // card, logo abaixo, precisa tanto do total acumulado quanto da tabela
+  // detalhada por empresa) ----
+  const faturamentoPorEmpresaSerie = insFaturamentoPorEmpresa();
+
+  function insMediaOuNull(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) / validos.length : null;
+  }
+  function insSomaOuNull(lista) {
+    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
+    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) : null;
+  }
+  function celEmpresa(v) {
+    return (v !== null && v !== undefined) ? fmtMoeda(v) : '—';
+  }
+
+  const somaMatriz = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
+  const somaLagos = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
+  const somaCaboFrio = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
+  const somaPSEnergia = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
+  const somaTotalEmpresas = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
+
+  const mediaMatriz = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
+  const mediaLagos = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
+  const mediaCaboFrio = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
+  const mediaPSEnergia = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
+  const mediaTotalEmpresas = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
+
+  const rotuloTotalEmpresas = faturamentoPorEmpresaSerie.length > 0
+    ? 'Total até ' + faturamentoPorEmpresaSerie[faturamentoPorEmpresaSerie.length - 1].nome
+    : 'Total';
+
+  const linhasFaturamentoPorEmpresa = faturamentoPorEmpresaSerie.map(function (f) {
+    return '<tr><td>' + f.nome + '</td><td>' + celEmpresa(f.matriz) + '</td><td>' + celEmpresa(f.lagos) + '</td><td>' +
+      celEmpresa(f.caboFrio) + '</td><td>' + celEmpresa(f.psEnergia) + '</td><td><strong>' + celEmpresa(f.total) + '</strong></td></tr>';
+  }).join('') +
+    '<tr style="border-top:2px solid var(--border)"><td>' + rotuloTotalEmpresas + '</td><td>' + celEmpresa(somaMatriz) + '</td><td>' +
+    celEmpresa(somaLagos) + '</td><td>' + celEmpresa(somaCaboFrio) + '</td><td>' + celEmpresa(somaPSEnergia) + '</td><td><strong>' + celEmpresa(somaTotalEmpresas) + '</strong></td></tr>' +
+    '<tr><td>Média</td><td>' + celEmpresa(mediaMatriz) + '</td><td>' + celEmpresa(mediaLagos) + '</td><td>' +
+    celEmpresa(mediaCaboFrio) + '</td><td>' + celEmpresa(mediaPSEnergia) + '</td><td><strong>' + celEmpresa(mediaTotalEmpresas) + '</strong></td></tr>';
+
+  const temMesSemPlanilha = faturamentoPorEmpresaSerie.some(function (f) { return !f.temPlanilha; });
+
+  const faturamentoPorEmpresaHtml =
+    '<div class="ins-tabela-scroll">' +
+    '<table class="ins-mini-table ins-tabela-empresas"><thead><tr>' +
+    '<th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>PS Energia</th><th>Total</th>' +
+    '</tr></thead><tbody>' + linhasFaturamentoPorEmpresa + '</tbody></table>' +
+    '</div>' +
+    (temMesSemPlanilha
+      ? '<div class="ins-nota-rodape">* Prime Sol Matriz/Lagos/Cabo Frio ficam em "—" nos meses em que a planilha mensal de faturamento por loja ainda não foi informada. PS Energia é sempre automático (Omie), não depende de planilha.</div>'
+      : '');
 
   // ---- alerta de categorias não classificadas ----
   // Compacto por padrão (só a contagem + botões) -- a lista completa fica
@@ -789,27 +910,28 @@ function renderizarInsights() {
     elAlerta.innerHTML = '';
   }
 
-  // ---- Faturamento do último mês fechado ----
+  // ---- Faturamento Acumulado no Ano (hero) ----
+  // Redesenhado em 06/08/2026: antes mostrava só o último mês fechado; o
+  // Fabrício preferiu destacar o acumulado do ano (visão mais robusta,
+  // não depende de um mês isolado ter sido bom ou ruim) e virou um card
+  // expansível -- ao clicar, abre a tabela "Faturamento por Empresa"
+  // (que antes vivia numa seção separada com o gráfico de linha, removido
+  // a pedido por não estar visualmente bom).
   const receitaAtual = DRE_RESUMO.receitaBruta[idxAtual];
-  const receitaAnterior = idxAnterior >= 0 ? DRE_RESUMO.receitaBruta[idxAnterior] : null;
-  let variacaoReceita = null;
-  if (receitaAtual !== null && receitaAnterior) {
-    variacaoReceita = (receitaAtual - receitaAnterior) / receitaAnterior * 100;
-  }
-  // Mês de referência já está FECHADO, então a média diária usa o total de
-  // dias daquele mês (não o dia de hoje, que só faria sentido pro mês em
-  // andamento).
-  const amAtual = insAnoMesPorIndice(idxAtual);
-  const diasNoMes = new Date(amAtual.ano, amAtual.mes, 0).getDate();
-  const mediaDiaria = (receitaAtual !== null) ? (receitaAtual / diasNoMes) : null;
 
   const heroHtml = '' +
-    '<div class="ins-hero">' +
-    '<div><div class="ins-hero-label">Faturamento do último mês fechado (' + nomeMesAtual + ') — Receita Operacional Bruta (DRE)</div>' +
-    '<div class="ins-hero-value">' + (receitaAtual !== null ? fmtMoeda(receitaAtual) : '—') + '</div></div>' +
+    '<div class="ins-hero ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
+    '<div class="ins-hero-top">' +
+    '<div><div class="ins-hero-label">Faturamento Acumulado no Ano — Receita Operacional Bruta (DRE)</div>' +
+    '<div class="ins-hero-value">' + (somaTotalEmpresas !== null ? fmtMoeda(somaTotalEmpresas) : '—') + '</div>' +
+    '<div class="ins-hero-sub">Jan a ' + nomeMesAtual + ' · clique pra ver por empresa <span class="ins-expandir-seta">▾</span></div></div>' +
     '<div class="ins-hero-stats">' +
-    '<div class="ins-hero-stat"><div class="l">vs. mês anterior</div><div class="v ' + insClasseVariacao(variacaoReceita) + '">' + insFmtPct(variacaoReceita) + '</div></div>' +
-    '<div class="ins-hero-stat"><div class="l">Média diária no mês</div><div class="v">' + (mediaDiaria !== null ? fmtMoeda(mediaDiaria) : '—') + '</div></div>' +
+    '<div class="ins-hero-stat"><div class="l">Média mensal no ano</div><div class="v">' + (mediaTotalEmpresas !== null ? fmtMoeda(mediaTotalEmpresas) : '—') + '</div></div>' +
+    '<div class="ins-hero-stat"><div class="l">Último mês fechado (' + nomeMesAtual + ')</div><div class="v">' + (receitaAtual !== null ? fmtMoeda(receitaAtual) : '—') + '</div></div>' +
+    '</div></div>' +
+    '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
+    '<div class="ins-kpi-label">Faturamento por Empresa</div>' +
+    faturamentoPorEmpresaHtml +
     '</div></div>';
 
   // ---- Rentabilidade ----
@@ -942,6 +1064,21 @@ function renderizarInsights() {
       { label: 'Valor', get: function (l) { return fmtMoeda(Math.abs(l.valor)); } },
       { label: 'Venceu em', get: function (l) { return l.data; } },
     ]) + '</div></div>' +
+    '</div>' +
+    '<div class="ins-card ins-card-largo">' +
+    '<div class="ins-kpi-label">Aging de Recebíveis (todos os títulos em aberto, não só os próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias)</div>' +
+    (aging.total > 0
+      ? aging.buckets.map(function (b) {
+          const pct = aging.total > 0 ? (b.valor / aging.total * 100) : 0;
+          const corBarra = (b.chave === 'b90' || b.chave === 'b90mais') ? 'var(--red)' : (b.chave === 'b60' ? 'var(--laranja)' : 'var(--accent)');
+          return '<div class="linha-depto">' +
+            '<span class="nome-depto">' + b.label + '</span>' +
+            '<div class="barra-wrap"><div class="barra" style="width:' + pct.toFixed(1) + '%;background:' + corBarra + '"></div></div>' +
+            '<span class="pct-depto">' + pct.toFixed(1) + '%</span>' +
+            '<span class="valor-depto">' + fmtMoeda(b.valor) + ' (' + b.qtd + ')</span>' +
+            '</div>';
+        }).join('')
+      : '<div class="ins-delta ins-neutro" style="margin-top:8px">Nenhum título em aberto no momento.</div>') +
     '</div>';
 
   // ---- Custo Fixo x Variável x Ponto de Equilíbrio ----
@@ -1048,171 +1185,6 @@ function renderizarInsights() {
   }).join('');
   const comparativoHtml = '<div class="ins-card">' + (linhasComparativo || '<div class="vazio">Sem lançamentos no mês atual.</div>') + '</div>';
 
-  // ---- Faturamento mensal (gráfico de linha + tabela) ----
-  const valoresFaturamento = faturamentoSerie.map(function (f) { return f.valor || 0; });
-  const maiorFaturamento = Math.max.apply(null, valoresFaturamento.concat([1]));
-  const menorFaturamento = Math.min.apply(null, valoresFaturamento.concat([0]));
-
-  const faturamentoChartHtml = (function () {
-    const largura = 640, altura = 220;
-    const margemEsq = 54, margemDir = 34, margemTopo = 34, margemBaixo = 30;
-    const areaLargura = largura - margemEsq - margemDir;
-    const areaAltura = altura - margemTopo - margemBaixo;
-    const n = faturamentoSerie.length;
-    // Um pouco de folga acima/abaixo do range real, pra a linha não colar
-    // no teto/chão do gráfico.
-    const folga = (maiorFaturamento - menorFaturamento) * 0.12 || maiorFaturamento * 0.12 || 1;
-    const topoEscala = maiorFaturamento + folga;
-    const baseEscala = Math.max(0, menorFaturamento - folga);
-    const range = (topoEscala - baseEscala) || 1;
-    function x(i) { return n > 1 ? margemEsq + (i / (n - 1)) * areaLargura : margemEsq + areaLargura / 2; }
-    function y(v) { return margemTopo + areaAltura - ((v - baseEscala) / range) * areaAltura; }
-
-    function abreviarMoeda(v) {
-      const abs = Math.abs(v);
-      if (abs >= 1000000) return 'R$ ' + (v / 1000000).toFixed(1).replace('.', ',') + 'M';
-      if (abs >= 1000) return 'R$ ' + (v / 1000).toFixed(0) + 'k';
-      return fmtMoeda(v);
-    }
-
-    // Linhas de grade horizontais + rótulo de valor à esquerda (4 faixas).
-    const nFaixas = 4;
-    let linhasGrade = '';
-    for (let f = 0; f <= nFaixas; f++) {
-      const fr = f / nFaixas;
-      const yy = margemTopo + areaAltura * fr;
-      const valorFaixa = topoEscala - fr * range;
-      linhasGrade += '<line x1="' + margemEsq + '" y1="' + yy + '" x2="' + (largura - margemDir) + '" y2="' + yy + '" class="ins-linechart-grade" />' +
-        '<text x="' + (margemEsq - 8) + '" y="' + (yy + 3) + '" text-anchor="end" class="ins-linechart-gridlabel">' + abreviarMoeda(valorFaixa) + '</text>';
-    }
-
-    // Curva suavizada (Catmull-Rom -> Bézier) em vez de linha reta ponto a
-    // ponto -- visualmente mais parecida com um gráfico de tendência "de
-    // verdade" em vez de um zigue-zague.
-    const pts = faturamentoSerie.map(function (f, i) { return [x(i), y(f.valor || 0)]; });
-    function caminhoSuave(pontos) {
-      if (pontos.length < 2) return '';
-      if (pontos.length === 2) return 'M' + pontos[0][0] + ',' + pontos[0][1] + ' L' + pontos[1][0] + ',' + pontos[1][1];
-      let d = 'M' + pontos[0][0] + ',' + pontos[0][1];
-      for (let i = 0; i < pontos.length - 1; i++) {
-        const p0 = pontos[i === 0 ? 0 : i - 1];
-        const p1 = pontos[i];
-        const p2 = pontos[i + 1];
-        const p3 = pontos[i + 2 < pontos.length ? i + 2 : i + 1];
-        const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
-        const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
-        const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
-        const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
-        d += ' C' + cp1x + ',' + cp1y + ' ' + cp2x + ',' + cp2y + ' ' + p2[0] + ',' + p2[1];
-      }
-      return d;
-    }
-    const caminhoLinha = caminhoSuave(pts);
-    const linhaBase = margemTopo + areaAltura;
-    const caminhoArea = caminhoLinha + ' L' + pts[pts.length - 1][0] + ',' + linhaBase + ' L' + pts[0][0] + ',' + linhaBase + ' Z';
-
-    const circulos = faturamentoSerie.map(function (f, i) {
-      const ehUltimo = i === faturamentoSerie.length - 1;
-      const classe = ehUltimo ? 'ins-linechart-ponto ins-linechart-ponto-atual' : 'ins-linechart-ponto';
-      const raio = ehUltimo ? 5 : 3.5;
-      let rotuloValor = '';
-      if (ehUltimo) {
-        // O último ponto costuma cair perto da borda direita do gráfico --
-        // com o texto centralizado (text-anchor="middle") a metade direita
-        // do valor acabava cortada pra fora do viewBox. Ancorando pelo
-        // final ("end") e recuando um pouco do ponto, o texto sempre cresce
-        // pra ESQUERDA, nunca estoura a borda direita, não importa o mês.
-        const px = x(i), py = y(f.valor || 0);
-        const ehPrimeiroOuUnico = n <= 1;
-        const ancora = ehPrimeiroOuUnico ? 'middle' : 'end';
-        const tx = ehPrimeiroOuUnico ? px : px + raio + 6;
-        rotuloValor = '<text x="' + tx + '" y="' + (py - 14) + '" text-anchor="' + ancora + '" class="ins-linechart-valor-atual">' + fmtMoeda(f.valor || 0) + '</text>';
-      }
-      return '<circle cx="' + x(i) + '" cy="' + y(f.valor || 0) + '" r="' + raio + '" class="' + classe + '">' +
-        '<title>' + f.nome + ': ' + fmtMoeda(f.valor || 0) + '</title></circle>' + rotuloValor;
-    }).join('');
-    const rotulosX = faturamentoSerie.map(function (f, i) {
-      return '<text x="' + x(i) + '" y="' + (altura - 8) + '" text-anchor="middle" class="ins-linechart-label">' + f.nome + '</text>';
-    }).join('');
-
-    return '<svg viewBox="0 0 ' + largura + ' ' + altura + '" class="ins-linechart-svg" preserveAspectRatio="none">' +
-      '<defs>' +
-      '<linearGradient id="insFaturamentoGradiente" x1="0" y1="0" x2="0" y2="1">' +
-      '<stop offset="0%" stop-color="var(--laranja)" stop-opacity="0.38" />' +
-      '<stop offset="100%" stop-color="var(--laranja)" stop-opacity="0" />' +
-      '</linearGradient>' +
-      '<filter id="insFaturamentoSombra" x="-20%" y="-20%" width="140%" height="140%">' +
-      '<feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.35" />' +
-      '</filter>' +
-      '</defs>' +
-      linhasGrade +
-      '<path d="' + caminhoArea + '" class="ins-linechart-area" />' +
-      '<path d="' + caminhoLinha + '" class="ins-linechart-linha" filter="url(#insFaturamentoSombra)" />' +
-      circulos + rotulosX +
-      '</svg>';
-  })();
-
-  // Média simples: soma dos meses disponíveis ÷ quantidade de meses (mesmo
-  // critério usado nas tabelas de Custo Fixo/Variável -- agora incorporado
-  // direto na tabela "Faturamento por Empresa" abaixo, coluna Total).
-
-  // ---- Faturamento por Empresa ----
-  const faturamentoPorEmpresaSerie = insFaturamentoPorEmpresa();
-
-  function insMediaOuNull(lista) {
-    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
-    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) / validos.length : null;
-  }
-  function insSomaOuNull(lista) {
-    const validos = lista.filter(function (v) { return v !== null && v !== undefined; });
-    return validos.length > 0 ? validos.reduce(function (a, b) { return a + b; }, 0) : null;
-  }
-  function celEmpresa(v) {
-    return (v !== null && v !== undefined) ? fmtMoeda(v) : '—';
-  }
-
-  const somaMatriz = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
-  const somaLagos = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
-  const somaCaboFrio = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
-  const somaPSEnergia = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
-  const somaTotalEmpresas = insSomaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
-
-  const mediaMatriz = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.matriz; }));
-  const mediaLagos = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.lagos; }));
-  const mediaCaboFrio = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.caboFrio; }));
-  const mediaPSEnergia = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.psEnergia; }));
-  const mediaTotalEmpresas = insMediaOuNull(faturamentoPorEmpresaSerie.map(function (f) { return f.total; }));
-
-  const rotuloTotalEmpresas = faturamentoPorEmpresaSerie.length > 0
-    ? 'Total até ' + faturamentoPorEmpresaSerie[faturamentoPorEmpresaSerie.length - 1].nome
-    : 'Total';
-
-  const linhasFaturamentoPorEmpresa = faturamentoPorEmpresaSerie.map(function (f) {
-    return '<tr><td>' + f.nome + '</td><td>' + celEmpresa(f.matriz) + '</td><td>' + celEmpresa(f.lagos) + '</td><td>' +
-      celEmpresa(f.caboFrio) + '</td><td>' + celEmpresa(f.psEnergia) + '</td><td><strong>' + celEmpresa(f.total) + '</strong></td></tr>';
-  }).join('') +
-    '<tr style="border-top:2px solid var(--border)"><td>' + rotuloTotalEmpresas + '</td><td>' + celEmpresa(somaMatriz) + '</td><td>' +
-    celEmpresa(somaLagos) + '</td><td>' + celEmpresa(somaCaboFrio) + '</td><td>' + celEmpresa(somaPSEnergia) + '</td><td><strong>' + celEmpresa(somaTotalEmpresas) + '</strong></td></tr>' +
-    '<tr><td>Média</td><td>' + celEmpresa(mediaMatriz) + '</td><td>' + celEmpresa(mediaLagos) + '</td><td>' +
-    celEmpresa(mediaCaboFrio) + '</td><td>' + celEmpresa(mediaPSEnergia) + '</td><td><strong>' + celEmpresa(mediaTotalEmpresas) + '</strong></td></tr>';
-
-  const temMesSemPlanilha = faturamentoPorEmpresaSerie.some(function (f) { return !f.temPlanilha; });
-
-  const faturamentoPorEmpresaHtml = '<div class="ins-card ins-card-largo">' +
-    '<div class="ins-kpi-label">Faturamento por Empresa</div>' +
-    '<div class="ins-tabela-scroll">' +
-    '<table class="ins-mini-table ins-tabela-empresas"><thead><tr>' +
-    '<th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>PS Energia</th><th>Total</th>' +
-    '</tr></thead><tbody>' + linhasFaturamentoPorEmpresa + '</tbody></table>' +
-    '</div>' +
-    (temMesSemPlanilha
-      ? '<div class="ins-nota-rodape">* Prime Sol Matriz/Lagos/Cabo Frio ficam em "—" nos meses em que a planilha mensal de faturamento por loja ainda não foi informada. PS Energia é sempre automático (Omie), não depende de planilha.</div>'
-      : '') +
-    '</div>';
-
-  const faturamentoHtml = '<div class="ins-card">' + faturamentoChartHtml + '</div>' +
-    faturamentoPorEmpresaHtml;
-
   // ---- Indicadores adicionais: Ticket Médio, Comissão % Receita,
   // Capital de Giro, EBITDA Acumulado (YTD) ----
   const receitaAtualInd = DRE_RESUMO.receitaBruta[idxAtual];
@@ -1302,6 +1274,32 @@ function renderizarInsights() {
     '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
     (comissaoPctPeriodo !== null ? comissaoPctPeriodo.toFixed(1) + '%' : '—') + '</td></tr>';
 
+  // Despesas Fixas como % da Receita -- termômetro clássico de eficiência
+  // estrutural: mostra se o custo fixo está crescendo mais rápido que o
+  // faturamento (sinal de alerta) ou se a empresa está diluindo melhor os
+  // custos fixos conforme cresce. Reaproveita a mesma série de Custo Fixo
+  // (custos.serie) já usada na seção Custo Fixo × Variável.
+  function insDespesasFixasMensal() {
+    return custos.serie.map(function (m) {
+      const receita = DRE_RESUMO.receitaBruta[m.indice];
+      const pct = (receita) ? (m.fixo / receita * 100) : null;
+      return { nome: m.nome, indice: m.indice, pct: pct, fixo: m.fixo, receita: receita };
+    });
+  }
+  const despesasFixasSerie = insDespesasFixasMensal();
+  const despesasFixasValidos = despesasFixasSerie.filter(function (d) { return d.pct !== null; });
+  const despesasFixasMedia = despesasFixasValidos.length > 0
+    ? despesasFixasValidos.reduce(function (s, d) { return s + d.pct; }, 0) / despesasFixasValidos.length
+    : null;
+  const despesasFixasSomaCusto = despesasFixasValidos.reduce(function (s, d) { return s + d.fixo; }, 0);
+  const despesasFixasSomaReceita = despesasFixasValidos.reduce(function (s, d) { return s + d.receita; }, 0);
+  const despesasFixasPctPeriodo = despesasFixasSomaReceita > 0 ? (despesasFixasSomaCusto / despesasFixasSomaReceita * 100) : null;
+  const linhasDespesasFixas = despesasFixasSerie.map(function (d) {
+    return '<tr><td>' + d.nome + '</td><td>' + (d.pct !== null ? d.pct.toFixed(1) + '%' : '—') + '</td></tr>';
+  }).join('') +
+    '<tr style="border-top:2px solid var(--border)"><td>Total do período</td><td>' +
+    (despesasFixasPctPeriodo !== null ? despesasFixasPctPeriodo.toFixed(1) + '%' : '—') + '</td></tr>';
+
   const indicadoresHtml = '<div class="ins-grid">' +
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
     '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
@@ -1317,6 +1315,14 @@ function renderizarInsights() {
     '<div class="ins-delta ins-neutro">' + (comissaoValidos.length > 0 ? 'média de ' + comissaoValidos.length + ' mês(es)' : 'sem dado de comissão') + '</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasComissao + '</tbody></table>' +
+    '</div></div>' +
+
+    '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
+    '<div class="ins-kpi-label">Despesas Fixas / Receita (Média) <span class="ins-expandir-seta">▾</span></div>' +
+    '<div class="ins-kpi-value">' + (despesasFixasMedia !== null ? despesasFixasMedia.toFixed(1) + '%' : '—') + '</div>' +
+    '<div class="ins-delta ins-neutro">' + (despesasFixasValidos.length > 0 ? 'média de ' + despesasFixasValidos.length + ' mês(es)' : '—') + '</div>' +
+    '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasDespesasFixas + '</tbody></table>' +
     '</div></div>' +
 
     '<div class="ins-card"><div class="ins-kpi-label">Capital de Giro (hoje)</div>' +
@@ -1356,7 +1362,6 @@ function renderizarInsights() {
     '<h2>📌 Outros Indicadores</h2>' + indicadoresHtml +
     '<h2>🎯 Custo Fixo × Variável & Ponto de Equilíbrio</h2>' + custosHtml +
     '<h2>🏢 Comparativo entre Empresas (' + nomeMesAtual + ')</h2>' + comparativoHtml +
-    '<h2>📈 Faturamento Mensal</h2>' + faturamentoHtml +
     '<h2>⚠️ Alertas Automáticos</h2>' + alertasHtml;
 }
 
@@ -1932,10 +1937,7 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
         linhas_config, todos_lancamentos, meses_dinamicos,
         manual_faturamento, manual_folha, manual_weg,
     )
-    nomes_meses = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun'] + [
-        f"{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m-1]}/{a}"
-        for (a, m) in meses_dinamicos
-    ]
+    nomes_meses = montar_nomes_meses(meses_dinamicos)
 
     # valores da linha-base (Receita Bruta no DRE, Recebimento Operacional no
     # DFC) mes a mes, usados como denominador do "% AV" (Análise Vertical) --
@@ -2055,10 +2057,7 @@ def gerar_html(contas: list) -> str:
         DRE_LINHAS, todos_lancamentos_grupo, meses_dinamicos,
         MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG,
     )
-    nomes_meses_insights = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun'] + [
-        f"{['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m-1]}/{a}"
-        for (a, m) in meses_dinamicos
-    ]
+    nomes_meses_insights = montar_nomes_meses(meses_dinamicos)
     dre_resumo_json = jsonlib.dumps(
         montar_resumo_dre(linhas_dre_calc, nomes_meses_insights, meses_dinamicos, MANUAL_FATURAMENTO_KIT),
         ensure_ascii=False,
@@ -2319,8 +2318,16 @@ def gerar_html(contas: list) -> str:
   .card .qtd {{ font-size: 9.5px; color: var(--text-faint); margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }}
 
   .card-departamento-wrap {{ padding: 0 32px; margin-top: 14px; }}
-  .card-departamento {{ max-width: none; padding-top: 0; }}
+  .card-departamento {{ max-width: none; padding-top: 0; cursor: pointer; transition: border-color 0.15s; }}
+  .card-departamento:hover {{ border-color: var(--laranja); }}
   .card-departamento .label {{ margin-bottom: 8px; }}
+  .depto-resumo {{ font-size: 13px; color: var(--text); margin-top: 2px; }}
+  .depto-resumo strong {{ color: var(--laranja); }}
+  .depto-resumo-sub {{ font-size: 11.5px; color: var(--text-faint); margin-top: 4px; display: flex; align-items: center; gap: 6px; }}
+  .depto-seta {{ display: inline-block; font-size: 10px; transition: transform 0.2s; }}
+  .card-departamento.aberto .depto-seta {{ transform: rotate(180deg); }}
+  .depto-corpo {{ display: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); cursor: default; }}
+  .card-departamento.aberto .depto-corpo {{ display: block; }}
   .linha-depto {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 13px; }}
   .linha-depto .nome-depto {{ flex: 0 0 200px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
   .linha-depto .barra-wrap {{ flex: 1; background: var(--bg); border-radius: 4px; height: 8px; overflow: hidden; }}
@@ -2469,9 +2476,9 @@ def gerar_html(contas: list) -> str:
 </header>
 
 <div class="abas-nav">
-  <button class="aba-btn aba-ativa" data-aba="Lancamentos" onclick="mostrarAba('Lancamentos')">Lançamentos</button>
-  <button class="aba-btn" data-aba="DFC" onclick="mostrarAba('DFC')">DFC</button>
-  <button class="aba-btn" data-aba="DRE" onclick="mostrarAba('DRE')">DRE</button>
+  <button class="aba-btn aba-ativa" data-aba="Lancamentos" onclick="mostrarAba('Lancamentos')">📋 Lançamentos</button>
+  <button class="aba-btn" data-aba="DFC" onclick="mostrarAba('DFC')">💵 DFC</button>
+  <button class="aba-btn" data-aba="DRE" onclick="mostrarAba('DRE')">📊 DRE</button>
   <button class="aba-btn" data-aba="Insights" onclick="mostrarAba('Insights')">💡 Insights</button>
 </div>
 
@@ -2891,8 +2898,10 @@ const LANC_CONJUNTO_IGNORAR = new Set((CLASSIFICACAO_CUSTOS_LANC.ignorar || []).
 
 function lancClassificarCusto(l) {{
   // Só faz sentido classificar SAÍDAS (despesas) -- entradas (receita) não
-  // são "custo fixo" nem "variável".
-  if (l.valor >= 0) return '-';
+  // são "custo fixo" nem "variável". "Não se Aplica" em vez de "-" pra não
+  // confundir com "Ignorado" (que é uma classificação de despesa de
+  // verdade) na hora de filtrar essa coluna.
+  if (l.valor >= 0) return 'Não se Aplica';
   // A Omie às vezes junta categorias no mesmo lançamento, separadas por
   // "; " (ex: "Insumos para Obras; Material de Escritório"). Pra uma
   // única célula da tabela, classificamos pela primeira categoria da
@@ -2913,7 +2922,7 @@ const COLUNAS = [
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente }},
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
   {{ key: 'categoria', label: 'Categoria', get: l => l.categoria }},
-  {{ key: 'departamento', label: 'Departamento', get: l => l.departamento }},
+  {{ key: 'departamento', label: 'Departamento', get: l => l.valor >= 0 ? 'Não se Aplica' : (l.departamento || '-') }},
   {{ key: 'custoFixoVariavel', label: 'Custo Fixo/Variável', get: l => lancClassificarCusto(l) }},
   {{ key: 'conta', label: 'Banco/Cartão', get: l => l.contaNome }},
   {{ key: 'observacao', label: 'Observação', get: l => l.observacao }},
@@ -2938,6 +2947,11 @@ let resizando = null;
 
 // Estado de ordenação da tabela: null = ordem natural (como veio da Omie).
 let ordenacao = {{ coluna: null, direcao: null }};
+
+// Se o card "Distribuição por Departamento" está expandido -- guardado
+// fora da função de render porque esse card é reconstruído do zero toda
+// vez que um filtro muda (senão fecharia sozinho a cada filtro novo).
+let departamentoAberto = false;
 
 /** Extrai o valor "comparável" de um lançamento para uma coluna, usado na
  * ordenação — números continuam números, datas viram AAAA-MM-DD (ordena
@@ -3161,10 +3175,24 @@ function renderizar() {{
   // cada departamento individual — assim "Comercial" de um lançamento
   // rateado soma com "Comercial" de outro lançamento 100% Comercial, em vez
   // de virar uma categoria à parte por combinação.
+  //
+  // O card vem FECHADO por padrão (só um resumo de 1-2 linhas) e expande
+  // ao clicar, mostrando a lista completa de departamentos com barra. O
+  // estado aberto/fechado fica guardado em `departamentoAberto` (fora
+  // desta função) porque esse card é reconstruído do zero toda vez que um
+  // filtro muda -- sem isso, o card fecharia sozinho a cada filtro novo.
+  //
+  // Só entram SAÍDAS (despesas) nessa distribuição -- receita não tem um
+  // "departamento" de verdade (qualquer entrada acaba caindo em
+  // "Comercial" por natureza da venda), então incluir receita aqui
+  // infla artificialmente o peso do Comercial e mascara a distribuição
+  // real de CUSTO entre os departamentos, que é o que esse card quer
+  // mostrar.
   const cardDepto = document.getElementById('cardDepartamentoContainer');
-  const totalAbsDepto = filtrados.reduce((s, l) => s + Math.abs(l.valor), 0);
+  const filtradosDespesaDepto = filtrados.filter(l => l.valor < 0);
+  const totalAbsDepto = filtradosDespesaDepto.reduce((s, l) => s + Math.abs(l.valor), 0);
   const somaPorDepto = {{}};
-  filtrados.forEach(l => {{
+  filtradosDespesaDepto.forEach(l => {{
     const valorAbs = Math.abs(l.valor);
     const rateio = (l.departamentosRateio && l.departamentosRateio.length)
       ? l.departamentosRateio
@@ -3175,8 +3203,8 @@ function renderizar() {{
       somaPorDepto[chave] = (somaPorDepto[chave] || 0) + valorParte;
     }});
   }});
-  const linhasDepto = Object.entries(somaPorDepto)
-    .sort((a, b) => b[1] - a[1])
+  const entradasDepto = Object.entries(somaPorDepto).sort((a, b) => b[1] - a[1]);
+  const linhasDepto = entradasDepto
     .map(([nome, valor]) => {{
       const pct = totalAbsDepto > 0 ? (valor / totalAbsDepto * 100) : 0;
       return `
@@ -3188,10 +3216,27 @@ function renderizar() {{
         </div>
       `;
     }}).join('');
+
+  // Maior departamento NOMEADO (fora o "-", que é só "sem departamento
+  // atribuído" -- nem todo lançamento precisa ter um, então não faz
+  // sentido destacar ele como se fosse um problema).
+  const maiorNomeado = entradasDepto.find(([nome]) => nome !== '-');
+  const resumoDepto = totalAbsDepto > 0
+    ? `<strong>${{fmtMoeda(totalAbsDepto)}}</strong> em despesas no filtro atual` +
+      (maiorNomeado ? ` · maior: ${{maiorNomeado[0]}} (${{(maiorNomeado[1] / totalAbsDepto * 100).toFixed(1)}}%)` : '')
+    : 'Nenhuma despesa encontrada com os filtros atuais.';
+
+  cardDepto.classList.toggle('aberto', departamentoAberto);
   cardDepto.innerHTML = `
-    <div class="label">Distribuição por Departamento (sobre o total filtrado)</div>
-    ${{linhasDepto || '<div class="vazio">Nenhum lançamento encontrado com os filtros atuais.</div>'}}
+    <div class="label">Distribuição por Departamento (só despesas do filtro atual)</div>
+    <div class="depto-resumo">${{resumoDepto}}</div>
+    ${{totalAbsDepto > 0 ? `<div class="depto-resumo-sub">clique pra ver os ${{entradasDepto.length}} departamento(s) <span class="depto-seta">▾</span></div>` : ''}}
+    <div class="depto-corpo">${{linhasDepto}}</div>
   `;
+  cardDepto.onclick = () => {{
+    departamentoAberto = !departamentoAberto;
+    cardDepto.classList.toggle('aberto', departamentoAberto);
+  }};
 
   // As caixas de saldo (e os cards de Entradas/Saídas logo abaixo) agora
   // mostram SEMPRE todas as contas das empresas marcadas no painel de cima
@@ -3328,7 +3373,7 @@ function renderizar() {{
       <td>${{l.cliente}}</td>
       <td>${{fmtMoeda(l.valor)}}</td>
       <td>${{l.categoria}}</td>
-      <td>${{l.departamento}}</td>
+      <td>${{l.valor >= 0 ? 'Não se Aplica' : (l.departamento || '-')}}</td>
       <td>${{lancClassificarCusto(l)}}</td>
       <td>${{l.contaNome}}</td>
       <td class="celula-obs" title="${{(l.observacao || '').replace(/"/g, '&quot;')}}">${{l.observacao}}</td>
