@@ -289,9 +289,18 @@ def somar_omie_categoria(todos_lancamentos, categoria_linha, competencia, ano_al
     # cada parte é tratada separadamente -- ver dividir_categoria_composta.
     base_sem_departamento, sufixo_alvo = _base_e_sufixo(categoria_linha)
 
+    # A flag "transferenciaInterna" marca qualquer lançamento cuja categoria
+    # contenha "transferência", pra escondê-los da tabela e dos cards de
+    # Entrada/Saída/Departamento (ver atualizar_dashboard.py). Mas as linhas
+    # 191/192 do DFC ("Transferência Entre Contas - Entrada/Saída") existem
+    # justamente pra capturar esses lançamentos -- se a linha alvo for uma
+    # delas, o filtro não pode ser aplicado, senão essas linhas nunca somam
+    # nada nos meses dinâmicos.
+    eh_linha_de_transferencia = "transferência" in categoria_linha.strip().lower()
+
     total = 0.0
     for l in todos_lancamentos:
-        if l.get("transferenciaInterna"):
+        if l.get("transferenciaInterna") and not eh_linha_de_transferencia:
             continue
         eff = mes_efetivo(l.get("data", ""), competencia)
         if eff != (ano_alvo, mes_alvo):
@@ -455,29 +464,54 @@ def montar_linhas_tabela(linhas_config, todos_lancamentos, meses_dinamicos,
 
     abrangencias = calcular_abrangencias(linhas_config)  # secao_linha -> (ini, fim)
 
+    # Nem toda linha "combinacao" é um contêiner que faz sentido recolher.
+    # Existem dois tipos bem diferentes:
+    #   - CONTÊINER: agrupa linhas de detalhe logo ABAIXO dela (abrangência
+    #     começa depois da própria linha, ex: "(-) Despesas Administrativas"
+    #     linha 79 abrange 80-102). Faz sentido ter seta e recolher.
+    #   - TOTAL/ROLLUP: soma outras seções que já apareceram ACIMA dela, pra
+    #     mostrar um resultado (ex: "Resultado do Período", "(=) Lucro
+    #     Bruto"). Sem essa distinção, essas linhas também ganhavam seta e,
+    #     ao clicar, colapsavam quase a tabela inteira (ex: "Resultado do
+    #     Período" no DFC abrange da linha 6 até a 192).
+    # Só os contêineres entram no dict abaixo -- usado tanto pra decidir
+    # quem tem seta/clique quanto pra calcular a indentação (nível = quantos
+    # contêineres "pai" envolvem a linha).
+    containers = {
+        secao: (ini, fim) for secao, (ini, fim) in abrangencias.items()
+        if ini > secao
+    }
+
     linhas_prontas = []
     for item in linhas_config:
         label = item["label"]
         tipo = item["classif"]["tipo"]
-        eh_subtotal = label.strip().startswith(('(-)', '(+)', '(=)', '(+/-)'))
+        linha_num = item["linha"]
+        eh_combinacao = tipo == "combinacao"
+        eh_secao = linha_num in containers
+        eh_total = eh_combinacao and not eh_secao
+        eh_subtotal = eh_total or label.strip().startswith(('(-)', '(+)', '(=)', '(+/-)'))
         valores = [item["valores"].get(m, 0) for m in estatico_por_mes]
         for (ano, mes) in meses_dinamicos:
-            valores.append(colunas_dinamicas[(ano, mes)].get(item["linha"]))
+            valores.append(colunas_dinamicas[(ano, mes)].get(linha_num))
 
-        # todas as seções (de qualquer nível) cuja abrangência contém esta
-        # linha -- ao recolher qualquer uma delas, esta linha deve sumir
+        # todos os contêineres (de qualquer nível) cuja abrangência contém
+        # esta linha -- ao recolher qualquer um deles, esta linha deve
+        # sumir. O tamanho dessa lista também vira o nível de indentação.
         secoes_pai = [
-            secao for secao, (ini, fim) in abrangencias.items()
-            if secao != item["linha"] and ini <= item["linha"] <= fim
+            secao for secao, (ini, fim) in containers.items()
+            if secao != linha_num and ini <= linha_num <= fim
         ]
         linhas_prontas.append({
-            "linha": item["linha"],
+            "linha": linha_num,
             "label": label,
             "subtotal": eh_subtotal,
+            "eh_total": eh_total,
             "vazio": tipo == "vazio",
             "pendente_manual": tipo in ("manual_faturamento_kit", "manual_folha", "manual_weg"),
             "valores": valores,
             "secoes_pai": secoes_pai,
-            "eh_secao": item["linha"] in abrangencias,
+            "eh_secao": eh_secao,
+            "nivel": len(secoes_pai),
         })
     return linhas_prontas
