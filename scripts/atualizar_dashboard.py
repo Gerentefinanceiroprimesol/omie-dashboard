@@ -216,10 +216,11 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-clickable { cursor: pointer; position: relative; transition: border-color .15s, background .15s; }
   #abaInsights .ins-clickable:hover { border-color: var(--laranja); background: #1c2841; }
   #abaInsights .ins-clickable::after {
+    /* Sempre visível (antes só aparecia no hover) -- em touch/mobile não
+       existe hover, então a dica de "dá pra clicar" nunca aparecia. */
     content: 'clique para detalhar ▾'; position: absolute; top: 12px; right: 14px;
-    font-size: 9.5px; color: var(--text-faint); opacity: 0; transition: opacity .15s;
+    font-size: 9.5px; color: var(--text-faint); opacity: 1;
   }
-  #abaInsights .ins-clickable:hover::after { opacity: 1; }
 
   #abaInsights .ins-detail-panel { max-height: 0; overflow: hidden; transition: max-height .25s ease; }
   #abaInsights .ins-detail-panel.aberto { max-height: 420px; overflow-y: auto; margin-top: 12px; }
@@ -2818,6 +2819,26 @@ function ddCapturadoParaLinha(l, categoriaLinha, baseSemDepartamento, sufixoAlvo
   return capturado;
 }}
 
+// Mesma ideia de ddCapturadoParaLinha, mas SEM filtrar por departamento --
+// soma a fração inteira da categoria BASE (todos os setores somados).
+// Usada só pra mostrar, no aviso de rateio, o valor total da CONTA na
+// Omie (ex: "FGTS" somando Comercial+ADM+MOD+MOI+Corporativo), já que a
+// linha da tabela mostra só a fatia de um setor.
+function ddCapturadoContaTotal(l, categoriaLinha, baseSemDepartamento) {{
+  const valorTotal = l.valor || 0;
+  const chaveCategoriaLinha = ddChaveComparacao(categoriaLinha);
+  const chaveBase = baseSemDepartamento ? ddChaveComparacao(baseSemDepartamento) : null;
+  let capturado = 0;
+  ddDividirCategoriaComposta(l.categoria).forEach(function (par) {{
+    const catNorm = par[0], peso = par[1];
+    const chaveCat = ddChaveComparacao(catNorm);
+    if (chaveCat === chaveCategoriaLinha || chaveCat === chaveBase) {{
+      capturado += valorTotal * peso;
+    }}
+  }});
+  return capturado;
+}}
+
 // ---- Tabela interativa do modal de drill-down (DRE/DFC) -- mesmas
 // funcionalidades da tabela de Lançamentos (ordenar, filtro estilo Excel,
 // redimensionar colunas, rolagem dupla), mas com estado próprio (prefixo
@@ -3099,11 +3120,15 @@ function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, titul
   const todos = insTodosLancamentos();
   const [baseSemDepartamento, sufixoAlvo] = ddBaseESufixo(categoriaAlvo);
 
+  const ddNoPeriodo = function (l) {{
+    if (l.transferenciaInterna) return false;
+    const eff = dreMesEfetivo(l.data, competencia);
+    return !!eff && eff.ano === ano && eff.mes === mes;
+  }};
+
   const filtrados = todos
     .filter(function (l) {{
-      if (l.transferenciaInterna) return false;
-      const eff = dreMesEfetivo(l.data, competencia);
-      if (!eff || eff.ano !== ano || eff.mes !== mes) return false;
+      if (!ddNoPeriodo(l)) return false;
       const capturado = ddCapturadoParaLinha(l, categoriaAlvo, baseSemDepartamento, sufixoAlvo);
       return Math.abs(capturado) > 0.01;
     }})
@@ -3125,11 +3150,18 @@ function abrirDrillDownDreDfc(linha, ano, mes, categoriaAlvo, competencia, titul
   }}
   if (sufixoAlvo) {{
     const totalRateado = filtrados.reduce((s, l) => s + (l._valorCapturado || 0), 0);
+    // Total da CONTA na Omie somando TODOS os setores (não só o desta
+    // linha) -- percorre "todos" (não "filtrados", que já veio restrito
+    // ao setor alvo) pra pegar as frações que caíram em outros departamentos.
+    const totalConta = todos
+      .filter(ddNoPeriodo)
+      .reduce((s, l) => s + ddCapturadoContaTotal(l, categoriaAlvo, baseSemDepartamento), 0);
     avisos.push(
       '<div class="drilldown-aviso">ℹ️ Esta conta é rateada por departamento: a categoria na Omie é '
       + `"<strong>${{baseSemDepartamento}}</strong>", dividida entre setores (Comercial/ADM/MOD/MOI/Corporativo) `
-      + `conforme o rateio de cada lançamento — abaixo só a fração "${{sufixoAlvo}}" de cada um. `
-      + `Valor total desta linha no mês: <strong>${{fmtMoeda(totalRateado)}}</strong>. `
+      + `conforme o rateio de cada lançamento. `
+      + `Valor total da conta no mês (todos os setores): <strong>${{fmtMoeda(totalConta)}}</strong>. `
+      + `Abaixo só a fração "${{sufixoAlvo}}" de cada lançamento — total desta linha: <strong>${{fmtMoeda(totalRateado)}}</strong>. `
       + 'A coluna "Departamento" mostra o rateio completo (todos os setores) de cada lançamento.</div>'
     );
   }}
