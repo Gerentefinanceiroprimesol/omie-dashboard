@@ -2060,10 +2060,23 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
     )
     linhas_html = []
     for l in linhas:
-        classe = "dre-subtotal" if l["subtotal"] else ""
+        nivel = min(l["nivel"], 4)
+        # 3 estilos visuais bem diferenciados:
+        # - dre-total: linha de resultado/total (soma seções acima dela) --
+        #   negrito forte, fundo mais saturado, SEM seta (não recolhe nada).
+        # - dre-secao: contêiner real (agrupa linhas abaixo dela) -- negrito
+        #   leve, fundo sutil, COM seta clicável.
+        # - sem classe: linha de detalhe, só indentada conforme o nível.
+        if l["eh_total"]:
+            classe = "dre-total"
+        elif l["eh_secao"]:
+            classe = "dre-secao"
+        else:
+            classe = ""
+        classe += f" dre-nivel-{nivel}"
         atributo_dentro = f' data-dentro="{" ".join(str(s) for s in l["secoes_pai"])}"' if l["secoes_pai"] else ""
         atributo_secao = f' data-secao="{l["linha"]}" onclick="toggleSecaoDreDfc(this)"' if l["eh_secao"] else ""
-        marcador = '<span class="dre-toggle">▾</span> ' if l["eh_secao"] else ""
+        marcador = '<span class="dre-toggle">▾</span>' if l["eh_secao"] else ""
         celulas = "".join(
             f"{montar_celula_valor(l['linha'], i, v)}"
             f'<td class="dre-col-pct">{formatar_percentual(av_percent(v, i))}</td>'
@@ -2073,7 +2086,7 @@ def montar_tabela_dre_dfc_html(titulo: str, linhas_config: list, todos_lancament
         )
         linhas_html.append(
             f'<tr class="{classe}"{atributo_dentro}{atributo_secao}>'
-            f'<td class="dre-label">{marcador}{l["label"]}</td>{celulas}</tr>'
+            f'<td class="dre-label">{marcador}<span class="dre-label-texto">{l["label"]}</span></td>{celulas}</tr>'
         )
 
     return f"""
@@ -2315,12 +2328,36 @@ def gerar_html(contas: list) -> str:
   .dre-dfc-tabela td {{ padding: 6px 10px; text-align: right; border-top: 1px solid var(--border); }}
   .dre-dfc-tabela td.dre-label {{
     text-align: left; position: sticky; left: 0; background: var(--bg-card); z-index: 1;
+    padding-left: 10px;
   }}
-  .dre-dfc-tabela tr.dre-subtotal {{ font-weight: 800; background: rgba(54,91,221,0.08); }}
-  .dre-dfc-tabela tr.dre-subtotal td.dre-label {{ background: #16223f; }}
-  .dre-toggle {{ display: inline-block; width: 12px; cursor: pointer; user-select: none; }}
-  .dre-dfc-tabela tr[data-secao] td.dre-label {{ cursor: pointer; }}
-  .dre-dfc-tabela tr.dre-colapsada {{ display: none; }}
+  /* Linha de TOTAL/RESULTADO (soma seções acima dela): negrito forte,
+     fundo mais saturado, sem seta -- é só leitura, não recolhe nada. */
+  .dre-dfc-tabela tr.dre-total {{ font-weight: 800; background: rgba(54,91,221,0.10); }}
+  .dre-dfc-tabela tr.dre-total td.dre-label {{ background: #16223f; }}
+  /* Linha de SEÇÃO (contêiner real, agrupa linhas abaixo dela): destaque
+     mais leve que o total, pra não competir visualmente -- e com seta. */
+  .dre-dfc-tabela tr.dre-secao {{ font-weight: 700; background: rgba(250,168,33,0.05); }}
+  .dre-dfc-tabela tr.dre-secao td.dre-label {{ background: #131d38; }}
+  .dre-dfc-tabela tr.dre-secao:hover td.dre-label {{ background: #182444; }}
+  /* Indentação por nível de aninhamento -- dá a noção de hierarquia que
+     antes não existia (seção de 1º nível e sub-seção pareciam iguais). */
+  .dre-dfc-tabela tr.dre-nivel-1 td.dre-label {{ padding-left: 26px; }}
+  .dre-dfc-tabela tr.dre-nivel-2 td.dre-label {{ padding-left: 42px; }}
+  .dre-dfc-tabela tr.dre-nivel-3 td.dre-label {{ padding-left: 58px; }}
+  .dre-dfc-tabela tr.dre-nivel-4 td.dre-label {{ padding-left: 74px; }}
+  .dre-toggle {{
+    display: inline-block; width: 14px; margin-right: 2px; text-align: center;
+    color: var(--laranja); font-size: 10px; cursor: pointer; user-select: none;
+    transition: transform 0.18s ease;
+  }}
+  .dre-dfc-tabela tr[data-secao] {{ cursor: pointer; }}
+  .dre-dfc-tabela tr[data-secao].dre-secao-fechada .dre-toggle {{ transform: rotate(-90deg); }}
+  /* Recolher/expandir com fade em vez de sumir/aparecer seco: a opacidade
+     anima primeiro; só depois de terminar a transição a linha sai do fluxo
+     (display:none), senão o table-layout "pula" sem suavidade nenhuma. */
+  .dre-dfc-tabela tbody tr {{ transition: opacity 0.16s ease; opacity: 1; }}
+  .dre-dfc-tabela tbody tr.dre-colapsada {{ opacity: 0; }}
+  .dre-dfc-tabela tbody tr.dre-oculta {{ display: none; }}
   .dre-col-pct {{ font-size: 10.5px; color: var(--text-faint); min-width: 50px; }}
   .dre-col-delta {{ font-size: 10.5px; min-width: 60px; }}
   .dre-cell-click {{ cursor: pointer; transition: background .1s, outline-color .1s; }}
@@ -3821,14 +3858,37 @@ function mostrarAba(nome) {{
 function toggleSecaoDreDfc(trSecao) {{
   const linha = trSecao.dataset.secao;
   const tabela = trSecao.closest('table');
+  // Recolhe todas as linhas aninhadas dentro desta seção, em qualquer
+  // nível (padrão normal de acordeão). O que mudou (ver engine_dre_dfc.py,
+  // dict "containers"): só entram aqui seções que são contêineres DE
+  // VERDADE -- linhas de total/resultado (que somam seções JÁ mostradas
+  // acima, tipo "Resultado do Período") não geram entrada nenhuma, então
+  // não têm mais seta nem colapsam a tabela inteira por engano.
   const filhos = Array.from(tabela.querySelectorAll('tr[data-dentro]')).filter(tr =>
     tr.dataset.dentro.split(' ').includes(linha)
   );
   if (!filhos.length) return;
-  const jaColapsado = filhos[0].classList.contains('dre-colapsada');
-  filhos.forEach(tr => tr.classList.toggle('dre-colapsada', !jaColapsado));
-  const marcador = trSecao.querySelector('.dre-toggle');
-  if (marcador) marcador.textContent = jaColapsado ? '▾' : '▸';
+  const vaiFechar = !filhos[0].classList.contains('dre-colapsada');
+  trSecao.classList.toggle('dre-secao-fechada', vaiFechar);
+
+  if (vaiFechar) {{
+    // 1) opacidade some com transição; 2) só depois de terminar a
+    // animação a linha sai do fluxo da tabela (display:none) -- fazer os
+    // dois ao mesmo tempo cortava a transição pela metade.
+    filhos.forEach(tr => tr.classList.add('dre-colapsada'));
+    setTimeout(() => {{
+      filhos.forEach(tr => {{
+        if (tr.classList.contains('dre-colapsada')) tr.classList.add('dre-oculta');
+      }});
+    }}, 170);
+  }} else {{
+    filhos.forEach(tr => tr.classList.remove('dre-oculta'));
+    // Força o navegador a aplicar o display:block antes de tirar a
+    // opacidade, senão as duas mudanças são agrupadas num único frame e a
+    // transição de entrada não roda (some o fade-in).
+    void tabela.offsetWidth;
+    filhos.forEach(tr => tr.classList.remove('dre-colapsada'));
+  }}
 }}
 
 // Barra de rolagem duplicada (em cima e embaixo) nas tabelas de DRE/DFC,
