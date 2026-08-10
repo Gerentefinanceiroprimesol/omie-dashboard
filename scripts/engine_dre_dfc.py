@@ -54,6 +54,38 @@ DEPARTAMENTO_OMIE_PARA_SUFIXO = {
 }
 SUFIXOS_DEPARTAMENTO = {"MOD", "MOI", "ADM", "Comercial", "Corporativo"}
 
+# Lançamentos de CARTÃO DE CRÉDITO nunca têm departamento (nem reconhecido,
+# nem desconhecido -- a Omie retorna erro 500 no ListarMovimentos pra conta
+# tipo cartão, então o campo fica "-" sempre; ver coletar_dados() em
+# atualizar_dashboard.py). Isso NÃO tem uma regra geral automática -- cada
+# lançamento nessa situação precisa ser conferido caso a caso direto no
+# Omie e corrigido aqui manualmente, um a um. Esta lista cobre só os casos
+# JÁ CONFERIDOS por Fabrício (checado em 10/08/2026, aba Departamentos de
+# cada título no Omie): cada entrada é amarrada em data + cliente + valor
+# exatos, então um lançamento novo -- mesmo que do mesmo cliente e mesma
+# categoria -- não bate aqui automaticamente, e continua aparecendo no
+# alerta de não-classificados até ser conferido e adicionado nesta lista.
+CORRECOES_MANUAIS_DEPARTAMENTO = [
+    {"data": "03/07/2026", "cliente": "PRUDENTIAL DO BRASIL SEGUROS S.A.",
+     "valor": -353.36, "sufixo": "Corporativo"},
+    {"data": "03/07/2026", "cliente": "LA VILLE ELEGANCE PAES E DOCES LTDA",
+     "valor": -207.53, "sufixo": "ADM"},
+]
+
+
+def _correcao_manual_sufixo(l):
+    """Devolve o sufixo de departamento corrigido manualmente pra este
+    lançamento exato (data + cliente + valor), ou None se não houver
+    correção cadastrada -- nesse caso o lançamento continua aparecendo
+    no alerta de não-classificados, como qualquer outro caso não
+    resolvido."""
+    valor = l.get("valor", 0) or 0
+    for c in CORRECOES_MANUAIS_DEPARTAMENTO:
+        if (l.get("data") == c["data"] and l.get("cliente") == c["cliente"]
+                and abs(valor - c["valor"]) < 0.01):
+            return c["sufixo"]
+    return None
+
 
 def normalizar_categoria(categoria_bruta: str) -> str:
     return DE_PARA.get((categoria_bruta or "").strip(), (categoria_bruta or "").strip())
@@ -154,13 +186,19 @@ def _capturado_para_linha(l, categoria_linha, base_sem_departamento, sufixo_alvo
             # Serviços de Terceiros (33% cada) -- só Administrativo é
             # centro de custo válido, então a fatia inteira de "Ajuda de
             # Custo" (100% dela, não 33%) cai em "Ajuda de Custo - ADM".
-            # Se NENHUM departamento do rateio for reconhecido, a fatia
-            # continua não capturada (não tem pra onde redistribuir).
             pct_total_conhecidos = sum(
                 (d.get("percentual", 0) or 0) for d in rateio
                 if _sufixo_departamento(d.get("nome"))
             )
             if pct_total_conhecidos <= 0:
+                # Nenhum departamento do rateio é reconhecido -- caso típico
+                # de lançamento de CARTÃO (departamento sempre vem "-"). Só
+                # cai aqui se este lançamento EXATO já foi conferido e está
+                # em CORRECOES_MANUAIS_DEPARTAMENTO acima; caso contrário
+                # continua não capturado, igual antes.
+                sufixo_manual = _correcao_manual_sufixo(l)
+                if sufixo_manual and sufixo_manual == sufixo_alvo:
+                    capturado += valor_parte
                 continue
             for d in rateio:
                 if _sufixo_departamento(d.get("nome")) == sufixo_alvo:
