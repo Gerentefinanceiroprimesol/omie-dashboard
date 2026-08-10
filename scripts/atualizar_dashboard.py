@@ -1832,15 +1832,28 @@ def coletar_dados() -> list:
                 if (m.get("cOrigem") or "").strip().lower().startswith("previsão de"):
                     continue
 
-                cod_mov = m.get("nCodLancamento") or m.get("nCodLancRelac")
+                # Tenta cruzar primeiro por nCodLancamento; se esse código não
+                # bater com nenhum título no lookup (caso de lançamentos
+                # confirmados via arquivo de retorno de integração bancária,
+                # onde o código do movimento pode não ser o mesmo do título),
+                # tenta nCodLancRelac como segunda tentativa -- antes só caía
+                # pro relac quando nCodLancamento vinha vazio, não quando o
+                # cruzamento simplesmente não encontrava nada.
+                cod_mov = m.get("nCodLancamento")
                 info_titulo = lookup_titulos.get(cod_mov, {})
+                if not info_titulo:
+                    cod_mov_relac = m.get("nCodLancRelac")
+                    if cod_mov_relac:
+                        info_titulo = lookup_titulos.get(cod_mov_relac, {})
 
-                # Prioriza a observação real do título (Contas a Pagar/Receber);
-                # se não tiver, cai para a observação do extrato bancário (que
-                # às vezes só tem uma mensagem genérica de importação/conciliação).
+                # Concatena a observação real do título (Contas a Pagar/Receber)
+                # com a observação do extrato bancário, separadas por " / ",
+                # quando as duas existirem. Se só uma existir, mostra só ela;
+                # se nenhuma existir, mostra "-".
                 observacao_titulo = info_titulo.get("observacao", "")
                 observacao_extrato = (m.get("cObservacoes") or "").strip()
-                observacao_final = observacao_titulo or observacao_extrato or "-"
+                partes_observacao = [p for p in (observacao_titulo, observacao_extrato) if p]
+                observacao_final = " / ".join(partes_observacao) or "-"
 
                 categoria_final = m.get("cDesCategoria", "-") or "-"
                 # Transferências entre contas do PRÓPRIO grupo (ex: "Transf.
@@ -1965,7 +1978,11 @@ def formatar_variacao_percentual(atual, anterior):
 
 def montar_alerta_nao_classificados_html(itens: list, id_prefixo: str) -> str:
     if not itens:
-        return ""
+        return '''
+    <div class="dre-alerta-ok">
+      ✅ Todos os lançamentos estão classificados nas linhas desta demonstração — nenhuma pendência encontrada.
+    </div>
+    '''
     total_residual = sum(i["valor_residual"] for i in itens)
 
     def celula_sugestao(i):
@@ -2317,6 +2334,11 @@ def gerar_html(contas: list) -> str:
   .dre-alerta-nc .ins-btn-alerta:hover {{ background: rgba(250,168,33,0.32); }}
   .dre-alerta-nc .ins-detail-panel {{ max-height: 0; overflow: hidden; transition: max-height .25s ease; }}
   .dre-alerta-nc .ins-detail-panel.aberto {{ max-height: 420px; overflow-y: auto; margin-top: 12px; }}
+  .dre-alerta-ok {{
+    background: rgba(74,222,128,0.10); border: 1px solid var(--green);
+    border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12.5px;
+    color: var(--green); margin-bottom: 14px;
+  }}
   .dre-dfc-scroll {{ overflow-x: auto; overflow-y: auto; max-height: 65vh; border: 1px solid var(--border); border-radius: var(--radius-sm); }}
   .dre-dfc-tabela {{
     border-collapse: collapse; width: auto; min-width: 100%; font-size: 12px;
@@ -2411,37 +2433,41 @@ def gerar_html(contas: list) -> str:
   }}
 
   .saldo-total-wrap {{ padding: 14px 32px 0; }}
-  .saldo-total-linha {{ display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; }}
-  #saldoOntemContainer {{ flex: 0 0 240px; }}
-  #saldoTotalContainer {{ flex: 1; min-width: 260px; }}
+  .saldo-total-linha {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+  }}
+  #saldoOntemContainer {{ grid-column: span 1; }}
+  #saldoTotalContainer {{ grid-column: span 3; }}
 
   .card-saldo-ontem {{
     background: linear-gradient(180deg, #0f2942 0%, #0d2338 100%);
     border: 1px solid #1d4d7a;
     border-radius: var(--radius-sm);
-    padding: 13px 18px;
+    padding: 10px 12px;
     height: 100%;
     display: flex; flex-direction: column; justify-content: center;
   }}
   .card-saldo-ontem .label {{
-    font-size: 11px; font-weight: 800; color: var(--cyan); text-transform: uppercase; letter-spacing: .05em;
+    font-size: 9.5px; font-weight: 700; color: var(--cyan); text-transform: uppercase; letter-spacing: .04em;
   }}
-  .card-saldo-ontem .ref {{ font-size: 10px; color: var(--text-faint); margin-top: 3px; }}
-  .card-saldo-ontem .valor-saldo-ontem {{ font-size: 20px; font-weight: 800; color: #f0f9ff; letter-spacing: -0.01em; margin-top: 4px; }}
+  .card-saldo-ontem .ref {{ font-size: 9.5px; color: var(--text-faint); margin-top: 4px; }}
+  .card-saldo-ontem .valor-saldo-ontem {{ font-size: 16px; font-weight: 800; color: #f0f9ff; letter-spacing: -0.01em; margin-top: 4px; }}
 
   .card-saldo-total {{
     background: linear-gradient(135deg, #1a2f14 0%, #16321f 60%, #0f2942 100%);
     border: 1px solid #2d6a3e;
     border-radius: var(--radius-sm);
-    padding: 13px 18px;
+    padding: 10px 12px;
     height: 100%;
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
   }}
   .card-saldo-total .label {{
-    font-size: 11px; font-weight: 800; color: #6ee7a0; text-transform: uppercase; letter-spacing: .05em;
+    font-size: 9.5px; font-weight: 700; color: #6ee7a0; text-transform: uppercase; letter-spacing: .04em;
   }}
-  .card-saldo-total .ref {{ font-size: 10px; color: var(--text-faint); margin-top: 3px; }}
-  .card-saldo-total .valor-saldo-total {{ font-size: 23px; font-weight: 800; color: #eafff2; letter-spacing: -0.01em; }}
+  .card-saldo-total .ref {{ font-size: 9.5px; color: var(--text-faint); margin-top: 4px; }}
+  .card-saldo-total .valor-saldo-total {{ font-size: 18px; font-weight: 800; color: #eafff2; letter-spacing: -0.01em; }}
 
   .card {{
     background: var(--bg-card); border-radius: var(--radius-sm); padding: 10px 12px;
