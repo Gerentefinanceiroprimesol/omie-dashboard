@@ -1463,8 +1463,8 @@ if _key and _secret:
             {"id": "santander", "nome": "Santander", "tipo": "banco", "nCodCC": 11236843385},
             {"id": "sicredi", "nome": "Sicredi", "tipo": "banco", "nCodCC": 11239054225},
             {"id": "bradesco", "nome": "Bradesco", "tipo": "banco", "nCodCC": 11431467344},
-            {"id": "cartao_sicoob", "nome": "Cartão Sicoob", "tipo": "cartao", "nCodCC": 11574015480},
-            {"id": "cartao_itau", "nome": "Cartão Itaú", "tipo": "cartao", "nCodCC": 11693512362},
+            {"id": "cartao_sicoob", "nome": "Cartão Sicoob Matriz", "tipo": "cartao", "nCodCC": 11574015480},
+            {"id": "cartao_itau", "nome": "Cartão Itaú Matriz", "tipo": "cartao", "nCodCC": 11693512362},
         ],
     })
 
@@ -1478,7 +1478,7 @@ if _key and _secret:
         "app_secret": _secret,
         "contas": [
             {"id": "sicoob_lagos", "nome": "Sicoob Lagos", "tipo": "banco", "nCodCC": 10113758384},
-            {"id": "mastercard_lagos", "nome": "MasterCard", "tipo": "cartao", "nCodCC": 10453329672},
+            {"id": "mastercard_lagos", "nome": "Cartão Sicoob Lagos", "tipo": "cartao", "nCodCC": 10453329672},
         ],
     })
 
@@ -2525,6 +2525,8 @@ def gerar_html(contas: list) -> str:
   .dropdown-item input {{ accent-color: var(--accent); }}
   .dropdown-ok {{ width: 100%; background: var(--accent); color: white; border: none; border-radius: 6px; padding: 7px; font-size: 12px; font-weight: 600; cursor: pointer; }}
   .dropdown-ok:hover {{ background: var(--accent-hover); }}
+  .dropdown-redefinir {{ width: 100%; background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 6px; font-size: 11.5px; cursor: pointer; margin-top: 6px; }}
+  .dropdown-redefinir:hover {{ border-color: var(--laranja); color: var(--laranja); }}
 
   /* Tela de login (proteção de fachada, ver comentário de USUARIOS_LOGIN no Python) */
   body.nao-autenticado > *:not(#loginOverlay):not(script) {{ display: none !important; }}
@@ -2910,6 +2912,7 @@ function ddAbrirDropdownColuna(col, btnEl) {{
     </div>
     <div class="dropdown-lista"></div>
     <button type="button" class="dropdown-ok">Aplicar</button>
+    <button type="button" class="dropdown-redefinir">Redefinir este filtro</button>
   `;
 
   const lista = dropdown.querySelector('.dropdown-lista');
@@ -2938,6 +2941,11 @@ function ddAbrirDropdownColuna(col, btnEl) {{
     }} else {{
       ddColFiltros[col.key] = marcados;
     }}
+    ddFecharDropdowns();
+    ddRenderizarTabela();
+  }});
+  dropdown.querySelector('.dropdown-redefinir').addEventListener('click', () => {{
+    delete ddColFiltros[col.key];
     ddFecharDropdowns();
     ddRenderizarTabela();
   }});
@@ -3376,6 +3384,7 @@ function abrirDropdownColuna(col, btnEl) {{
     </div>
     <div class="dropdown-lista"></div>
     <button type="button" class="dropdown-ok">Aplicar</button>
+    <button type="button" class="dropdown-redefinir">Redefinir este filtro</button>
   `;
 
   const lista = dropdown.querySelector('.dropdown-lista');
@@ -3409,6 +3418,11 @@ function abrirDropdownColuna(col, btnEl) {{
     }} else {{
       colFiltros[col.key] = new Set(marcados);
     }}
+    fecharDropdowns();
+    renderizar();
+  }});
+  dropdown.querySelector('.dropdown-redefinir').addEventListener('click', () => {{
+    delete colFiltros[col.key];
     fecharDropdowns();
     renderizar();
   }});
