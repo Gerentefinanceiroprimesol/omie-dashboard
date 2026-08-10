@@ -140,9 +140,31 @@ def _capturado_para_linha(l, categoria_linha, base_sem_departamento, sufixo_alvo
             capturado += valor_parte
         elif sufixo_alvo and chave_cat == chave_base:
             rateio = l.get("departamentosRateio") or [{"nome": l.get("departamento", "-"), "percentual": 100}]
+            # Alguns lançamentos vêm com departamentos no rateio que não são
+            # centros de custo reais pra classificação (ex: "Operacional",
+            # "Serviços de Terceiros" -- nomes que não batem com nenhum dos
+            # sufixos conhecidos em DEPARTAMENTO_OMIE_PARA_SUFIXO). Quando
+            # isso aparece misturado com departamentos reconhecidos no mesmo
+            # rateio, o percentual dos desconhecidos não pode simplesmente
+            # "sumir" -- redistribuímos proporcionalmente só entre os
+            # departamentos reconhecidos (renormalizando pra somarem 100%
+            # entre eles), em vez de descartar aquela fatia como não
+            # capturada. Caso real confirmado com Fabrício (Renato Silva
+            # Nunes, 01/07/2026): rateio Administrativo/Operacional/
+            # Serviços de Terceiros (33% cada) -- só Administrativo é
+            # centro de custo válido, então a fatia inteira de "Ajuda de
+            # Custo" (100% dela, não 33%) cai em "Ajuda de Custo - ADM".
+            # Se NENHUM departamento do rateio for reconhecido, a fatia
+            # continua não capturada (não tem pra onde redistribuir).
+            pct_total_conhecidos = sum(
+                (d.get("percentual", 0) or 0) for d in rateio
+                if _sufixo_departamento(d.get("nome"))
+            )
+            if pct_total_conhecidos <= 0:
+                continue
             for d in rateio:
                 if _sufixo_departamento(d.get("nome")) == sufixo_alvo:
-                    capturado += valor_parte * (d.get("percentual", 0) or 0) / 100
+                    capturado += valor_parte * (d.get("percentual", 0) or 0) / pct_total_conhecidos
     return capturado
 
 
