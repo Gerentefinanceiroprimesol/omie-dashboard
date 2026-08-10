@@ -205,6 +205,7 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-up { color: var(--green); }
   #abaInsights .ins-down { color: var(--red); }
   #abaInsights .ins-neutro { color: var(--text-faint); }
+  #abaInsights .ins-obs-nota { font-size: 10.5px; color: var(--text-faint); margin-top: 4px; font-style: italic; }
 
   #abaInsights .ins-card-expandivel { cursor: pointer; transition: border-color 0.15s; }
   #abaInsights .ins-card-expandivel:hover { border-color: var(--laranja); }
@@ -1013,7 +1014,8 @@ function renderizarInsights() {
     cardMargem('Margem Bruta', mBruta) + cardMargem('Margem EBITDA', mEbitda) + cardMargem('Margem Líquida', mLiquida) +
     '<div class="ins-card"><div class="ins-kpi-label">Lucro Líquido do Mês</div>' +
     '<div class="ins-kpi-value">' + (DRE_RESUMO.lucroLiquido[idxAtual] !== null ? fmtMoeda(DRE_RESUMO.lucroLiquido[idxAtual]) : '—') + '</div>' +
-    '<div class="ins-delta ins-neutro">referência: ' + nomeMesAtual + '</div></div>' +
+    '<div class="ins-delta ins-neutro">referência: ' + nomeMesAtual + '</div>' +
+    '<div class="ins-obs-nota">Base: DRE (competência) — não é sobra de caixa do mês</div></div>' +
     '</div>' + rentabilidadeMensalHtml;
 
   // ---- Saúde de caixa ----
