@@ -1855,7 +1855,7 @@ def coletar_dados() -> list:
                 natureza_raw = (m.get("cNatureza") or "").strip().upper()
                 natureza = {"P": "Contas a Pagar", "R": "Contas a Receber"}.get(natureza_raw, "-")
 
-                # A data mostrada na coluna "Data Previsão/Pagamento" precisa
+                # A data mostrada na coluna "Data Realizada/Prevista" precisa
                 # bater com a mesma referência usada para calcular a Situação
                 # (Atrasado/Vence Hoje/A Vencer), senão dá incoerência tipo
                 # "vence hoje" numa data que já passou. Para títulos JÁ
@@ -3219,7 +3219,7 @@ function lancClassificarCusto(l) {{
 
 const COLUNAS = [
   {{ key: 'situacaoTitulo', label: 'Situação', get: l => l.situacaoTitulo }},
-  {{ key: 'data', label: 'Data Previsão/Pagamento', get: l => l.data }},
+  {{ key: 'data', label: 'Data Realizada/Prevista', get: l => l.data }},
   {{ key: 'empresa', label: 'Empresa', get: l => l.empresaNome }},
   {{ key: 'cliente', label: 'Cliente/Fornecedor', get: l => l.cliente }},
   {{ key: 'valor', label: 'Valor', get: l => fmtMoeda(l.valor) }},
@@ -3343,7 +3343,22 @@ document.addEventListener('click', (e) => {{
 function abrirDropdownColuna(col, btnEl) {{
   fecharDropdowns();
   const selecionadosAtuais = colFiltros[col.key];
-  const valoresUnicos = [...new Set(baseFiltradosGlobal.map(col.get))].sort();
+  // Estilo Excel de verdade: as opções do dropdown desta coluna refletem os
+  // filtros JÁ ATIVOS nas OUTRAS colunas (não o próprio filtro desta
+  // coluna, senão ela nunca mostraria os valores que o usuário acabou de
+  // desmarcar). Ex: se "Custo Fixo/Variável" está filtrado em "Não se
+  // Aplica", o dropdown de "Categoria" passa a listar só as categorias que
+  // aparecem nos lançamentos que sobraram desse filtro -- em vez da lista
+  // cheia de categorias do período inteiro.
+  const baseParaOpcoes = baseFiltradosGlobal.filter(l => {{
+    return COLUNAS.every(c => {{
+      if (c.key === col.key) return true;
+      const permitidos = colFiltros[c.key];
+      if (!permitidos) return true;
+      return permitidos.has(c.get(l));
+    }});
+  }});
+  const valoresUnicos = [...new Set(baseParaOpcoes.map(col.get))].sort();
 
   const dropdown = document.createElement('div');
   dropdown.className = 'dropdown-filtro';
@@ -3465,10 +3480,11 @@ function renderizar() {{
     }}));
   }});
 
-  // baseFiltradosGlobal (antes do filtro de coluna) alimenta as opções dos
-  // dropdowns estilo Excel — assim a lista de bancos no dropdown da coluna
-  // "Banco/Cartão" sempre mostra todos os disponíveis, mesmo os que estão
-  // desmarcados no momento (comportamento padrão do Excel).
+  // baseFiltradosGlobal (antes do filtro de coluna) é a base usada por
+  // abrirDropdownColuna para montar as opções de cada dropdown -- ali,
+  // cada coluna reaplica os filtros das OUTRAS colunas (cascata estilo
+  // Excel) antes de listar seus próprios valores únicos. Ver comentário
+  // dentro de abrirDropdownColuna.
   baseFiltradosGlobal = todosLancamentos;
   const filtrados = aplicarFiltrosColuna(todosLancamentos);
 
