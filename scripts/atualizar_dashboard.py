@@ -26,6 +26,7 @@ import requests
 from dre_dfc_dados import DRE_LINHAS, DFC_LINHAS, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, DE_PARA, \
     MANUAL_FATURAMENTO_POR_EMPRESA
 from engine_dre_dfc import calcular_meses_dinamicos, montar_linhas_tabela, calcular_nao_classificados
+from comercial_dados import extrair_comissao_ellen, gerar_html_aba_comercial
 # =============================================================
 # Bloco abaixo: lógica da aba Insights (Custo Fixo/Variável, resumo
 # da DRE, e o HTML/JS da aba). Fica isolado aqui dentro só visualmente
@@ -2194,6 +2195,12 @@ def gerar_html(contas: list) -> str:
     html_insights = montar_html_insights(dre_resumo_json, classificacao_custos_json, insights_config_json,
                                           faturamento_por_empresa_json)
 
+    # --- Aba Comercial: independente da aba Lançamentos. Os dados de
+    # venda/comissão são estáticos (planilhas mensais, ver comercial_dados.py);
+    # só a comissão da Ellen é extraída dos lançamentos que `contas` já trouxe.
+    dados_ellen = extrair_comissao_ellen(contas)
+    html_comercial = gerar_html_aba_comercial(dados_ellen)
+
     usuarios_login_json = jsonlib.dumps(USUARIOS_LOGIN, ensure_ascii=False)
 
     empresas_unicas = list(dict.fromkeys(c["empresa"] for c in contas))
@@ -2655,6 +2662,7 @@ def gerar_html(contas: list) -> str:
   <button class="aba-btn" data-aba="DFC" onclick="mostrarAba('DFC')">💵 DFC</button>
   <button class="aba-btn" data-aba="DRE" onclick="mostrarAba('DRE')">📊 DRE</button>
   <button class="aba-btn" data-aba="Insights" onclick="mostrarAba('Insights')">💡 Insights</button>
+  <button class="aba-btn" data-aba="Comercial" onclick="mostrarAba('Comercial')">💼 Comercial</button>
 </div>
 
 <div id="abaLancamentos">
@@ -3927,6 +3935,7 @@ renderizar();
   </div>
 </div>
 {html_insights}
+{html_comercial}
 
 <script>
 function mostrarAba(nome) {{
@@ -3934,6 +3943,7 @@ function mostrarAba(nome) {{
   document.getElementById('abaDFC').style.display = (nome === 'DFC') ? '' : 'none';
   document.getElementById('abaDRE').style.display = (nome === 'DRE') ? '' : 'none';
   document.getElementById('abaInsights').style.display = (nome === 'Insights') ? '' : 'none';
+  document.getElementById('abaComercial').style.display = (nome === 'Comercial') ? '' : 'none';
   document.querySelectorAll('.aba-btn').forEach(btn => {{
     btn.classList.toggle('aba-ativa', btn.dataset.aba === nome);
   }});
