@@ -207,6 +207,12 @@ INSIGHTS_HTML_TEMPLATE = r"""
   #abaInsights .ins-down { color: var(--red); }
   #abaInsights .ins-neutro { color: var(--text-faint); }
   #abaInsights .ins-obs-nota { font-size: 10.5px; color: var(--text-faint); margin-top: 4px; font-style: italic; }
+  #abaInsights .ins-base-tag {
+    display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .03em; color: var(--text-faint); background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; margin-left: 6px;
+    vertical-align: middle;
+  }
 
   #abaInsights .ins-card-expandivel { cursor: pointer; transition: border-color 0.15s; }
   #abaInsights .ins-card-expandivel:hover { border-color: var(--laranja); }
@@ -316,6 +322,16 @@ function toggleDetalheInsight(id) {
     if (p.id !== id) p.classList.remove('aberto');
   });
   el.classList.toggle('aberto');
+}
+
+// Selo pequeno "Base: X" ao lado do título de cada card, indicando se o
+// número vem da DRE (regime de competência) ou dos lançamentos brutos da
+// Omie (regime de caixa -- entradas/saídas reais, títulos a receber/pagar,
+// saldo bancário). Cards que misturam as duas fontes (Ponto de Equilíbrio,
+// Despesas Fixas % Receita) não usam este selo -- já têm nota explicativa
+// própria no corpo do card, mais detalhada que caberia num selo.
+function insBaseTag(texto) {
+  return '<span class="ins-base-tag">Base: ' + texto + '</span>';
 }
 
 function insFmtPct(v, casas) {
@@ -960,7 +976,7 @@ function renderizarInsights() {
 
   function cardMargem(titulo, m) {
     const deltaTxto = m.deltaPP === null ? '—' : (Math.abs(m.deltaPP).toFixed(1) + ' p.p. ' + (m.deltaPP >= 0 ? 'a mais' : 'a menos') + ' vs mês anterior');
-    return '<div class="ins-card"><div class="ins-kpi-label">' + titulo + '</div>' +
+    return '<div class="ins-card"><div class="ins-kpi-label">' + titulo + insBaseTag('DRE') + '</div>' +
       '<div class="ins-kpi-value">' + (m.margemAtual !== null ? m.margemAtual.toFixed(1) + '%' : '—') + '</div>' +
       '<div class="ins-delta ' + insClasseVariacao(m.deltaPP) + '">' + deltaTxto + '</div></div>';
   }
@@ -1006,14 +1022,14 @@ function renderizarInsights() {
     '<tr style="border-top:2px solid var(--border)"><td>Média</td><td>' + celRentabPct(mediaMB) + '</td><td>' + celRentabPct(mediaME) + '</td><td>' + celRentabPct(mediaML) + '</td><td>' + celRentabMoeda(mediaLL) + '</td></tr>';
 
   const rentabilidadeMensalHtml = '<div class="ins-card ins-rentab-card">' +
-    '<div class="ins-kpi-label">Rentabilidade Mês a Mês</div>' +
+    '<div class="ins-kpi-label">Rentabilidade Mês a Mês' + insBaseTag('DRE') + '</div>' +
     '<table class="ins-mini-table ins-rentab-table"><thead><tr>' +
     '<th>Mês</th><th>Margem Bruta</th><th>Margem EBITDA</th><th>Margem Líquida</th><th>Lucro Líquido</th>' +
     '</tr></thead><tbody>' + linhasRentabilidadeMensal + '</tbody></table></div>';
 
   const rentabilidadeHtml = '<div class="ins-grid">' +
     cardMargem('Margem Bruta', mBruta) + cardMargem('Margem EBITDA', mEbitda) + cardMargem('Margem Líquida', mLiquida) +
-    '<div class="ins-card"><div class="ins-kpi-label">Lucro Líquido do Mês</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Lucro Líquido do Mês' + insBaseTag('DRE') + '</div>' +
     '<div class="ins-kpi-value">' + (DRE_RESUMO.lucroLiquido[idxAtual] !== null ? fmtMoeda(DRE_RESUMO.lucroLiquido[idxAtual]) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">referência: ' + nomeMesAtual + '</div>' +
     '<div class="ins-obs-nota">Base: DRE (competência) — não é sobra de caixa do mês</div></div>' +
@@ -1037,34 +1053,46 @@ function renderizarInsights() {
     runwayDeltaHtml = '+' + fmtMoeda(crescimentoMedio) + '/mês em média, nos últimos ' + saude.mesesContadosRunway + ' meses (entradas > saídas)';
   }
   const linhasDetalheRunway = saude.detalheRunway.map(function (m) {
+    // m.queimaLiquida = saídas − entradas. Positivo = o mês queimou caixa
+    // (saiu mais do que entrou); negativo = o mês gerou caixa (entrou mais
+    // do que saiu). Deixamos isso explícito na célula (ícone + palavra),
+    // em vez de só mostrar o número com sinal, que gerava confusão.
+    const queimou = m.queimaLiquida > 0;
+    const corResultado = queimou ? 'var(--red)' : 'var(--green)';
+    const iconeResultado = queimou ? '🔥' : '📈';
+    const rotuloResultado = queimou ? 'queimou' : 'gerou';
     return '<tr><td>' + m.nome + '</td>' +
       '<td class="valor-col" style="color:var(--green)">' + fmtMoeda(m.entradas) + '</td>' +
       '<td class="valor-col" style="color:var(--red)">-' + fmtMoeda(m.saidas) + '</td>' +
-      '<td class="valor-col">' + (m.queimaLiquida >= 0 ? fmtMoeda(m.queimaLiquida) : '<span style="color:var(--green)">' + fmtMoeda(m.queimaLiquida) + '</span>') + '</td></tr>';
+      '<td class="valor-col" style="color:' + corResultado + '">' + iconeResultado + ' ' + rotuloResultado + ' ' + fmtMoeda(Math.abs(m.queimaLiquida)) + '</td></tr>';
   }).join('');
   const detalheRunwayHtml = saude.mesesContadosRunway === 0 ? '' :
     '<div style="padding-top:10px;border-top:1px solid var(--border);margin-top:10px;font-size:12.5px;">' +
-    '<div style="margin-bottom:8px;color:var(--text-muted);">Saldo bancário atual (todas as contas banco, na data de hoje): <strong style="color:var(--text)">' + fmtMoeda(saude.saldoBancarioAtual) + '</strong></div>' +
-    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Entradas</th><th>Saídas</th><th>Queima líquida (saídas − entradas)</th></tr></thead>' +
+    '<div style="margin-bottom:10px;color:var(--text-muted);line-height:1.5;">' +
+    'O <strong style="color:var(--text)">Runway</strong> mostra quantos meses o caixa atual aguenta, ' +
+    'se o ritmo dos últimos ' + saude.mesesContadosRunway + ' meses se mantiver. Funciona em 3 passos:</div>' +
+    '<div style="margin-bottom:8px;color:var(--text-muted);">' +
+    '<strong style="color:var(--text)">1.</strong> Em cada mês, vemos se o caixa cresceu ou queimou (entradas vs. saídas):</div>' +
+    '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Entradas</th><th>Saídas</th><th>Resultado do mês</th></tr></thead>' +
     '<tbody>' + linhasDetalheRunway + '</tbody></table>' +
-    '<div style="margin-top:10px;color:var(--text-muted);">' +
-    'Queima média = soma da queima líquida dos ' + saude.mesesContadosRunway + ' meses ÷ ' + saude.mesesContadosRunway + ' = <strong style="color:var(--text)">' + fmtMoeda(saude.queimaMedia) + '/mês</strong>' +
+    '<div style="margin-top:12px;color:var(--text-muted);">' +
+    '<strong style="color:var(--text)">2.</strong> Tiramos a média desses ' + saude.mesesContadosRunway + ' meses (os que geraram caixa entram como valor negativo na conta, "abatendo" a queima) = <strong style="color:var(--text)">' + fmtMoeda(saude.queimaMedia) + '/mês</strong> de queima média' +
     '</div>' +
     '<div style="margin-top:6px;color:var(--text-muted);">' +
-    'Runway = saldo bancário ÷ queima média = ' + fmtMoeda(saude.saldoBancarioAtual) + ' ÷ ' + fmtMoeda(saude.queimaMedia) +
+    '<strong style="color:var(--text)">3.</strong> Runway = saldo bancário atual (' + fmtMoeda(saude.saldoBancarioAtual) + ') ÷ queima média (' + fmtMoeda(saude.queimaMedia) + ')' +
     ' = <strong style="color:var(--text)">' + (saude.runwayMeses !== null ? saude.runwayMeses.toFixed(1) + ' meses' : '—') + '</strong>' +
     '</div></div>';
   const saudeHtml = '<div class="ins-grid">' +
     '<div class="ins-card' + (saude.mesesContadosRunway > 0 ? ' ins-clickable' : '') + '"' +
     (saude.mesesContadosRunway > 0 ? ' onclick="toggleDetalheInsight(' + "'insDetalheRunway'" + ')"' : '') + '>' +
-    '<div class="ins-kpi-label">Runway de Caixa</div>' +
+    '<div class="ins-kpi-label">Runway de Caixa' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value">' + runwayValorHtml + '</div>' +
     '<div class="ins-delta ins-neutro">' + runwayDeltaHtml + '</div>' +
     '<div class="ins-detail-panel" id="insDetalheRunway">' + detalheRunwayHtml + '</div>' +
     '</div>' +
 
     '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalheReceber'" + ')">' +
-    '<div class="ins-kpi-label">A Receber (em aberto)</div>' +
+    '<div class="ins-kpi-label">A Receber (em aberto)' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value" style="color:var(--green)">' + fmtMoeda(saude.aReceber) + '</div>' +
     '<div class="ins-delta ins-neutro">próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias</div>' +
     '<div class="ins-detail-panel" id="insDetalheReceber">' +
@@ -1076,7 +1104,7 @@ function renderizarInsights() {
     ]) + '</div></div>' +
 
     '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalhePagar'" + ')">' +
-    '<div class="ins-kpi-label">A Pagar (em aberto)</div>' +
+    '<div class="ins-kpi-label">A Pagar (em aberto)' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value" style="color:var(--red)">' + fmtMoeda(saude.aPagar) + '</div>' +
     '<div class="ins-delta ins-neutro">próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias</div>' +
     '<div class="ins-detail-panel" id="insDetalhePagar">' +
@@ -1088,7 +1116,7 @@ function renderizarInsights() {
     ]) + '</div></div>' +
 
     '<div class="ins-card ins-clickable" onclick="toggleDetalheInsight(' + "'insDetalheInadimplencia'" + ')">' +
-    '<div class="ins-kpi-label">Taxa de Inadimplência</div>' +
+    '<div class="ins-kpi-label">Taxa de Inadimplência' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value">' + saude.taxaInadimplencia.toFixed(1) + '%</div>' +
     '<div class="ins-delta ins-neutro">' + fmtMoeda(saude.taxaInadimplencia ? (saude.listaInadimplentes.reduce(function(s,l){return s+Math.abs(l.valor);},0)) : 0) + ' em atraso</div>' +
     '<div class="ins-detail-panel" id="insDetalheInadimplencia">' +
@@ -1100,7 +1128,7 @@ function renderizarInsights() {
     ]) + '</div></div>' +
     '</div>' +
     '<div class="ins-card ins-card-largo">' +
-    '<div class="ins-kpi-label">Aging de Recebíveis (todos os títulos em aberto, não só os próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias)</div>' +
+    '<div class="ins-kpi-label">Aging de Recebíveis (todos os títulos em aberto, não só os próximos ' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias)' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     (aging.total > 0
       ? aging.buckets.map(function (b) {
           const pct = aging.total > 0 ? (b.valor / aging.total * 100) : 0;
@@ -1161,6 +1189,19 @@ function renderizarInsights() {
         const margemPct = (info.margemContribuicao * 100).toFixed(1);
         peTexto += ' <span class="ins-status-bad" title="Margem de contribuição de apenas ' + margemPct + '% neste mês -- o cálculo (Custo Fixo ÷ Margem) fica instável e dispara. Não use este valor como referência.">⚠️</span>';
       }
+    } else {
+      // pe === null: ou não há receita registrada, ou a margem de
+      // contribuição é zero/negativa (custo variável igual ou maior que a
+      // receita) -- nesses casos o cálculo do PE não se aplica, então
+      // explicamos o motivo específico em vez de deixar um "—" sem contexto.
+      let motivo;
+      if (receitaMes === null || receitaMes === undefined || receitaMes === 0) {
+        motivo = 'Sem receita registrada neste mês -- não dá pra calcular a margem de contribuição.';
+      } else {
+        const margemPct = (info.margemContribuicao * 100).toFixed(1);
+        motivo = 'Custo variável (' + fmtMoeda(m.variavel) + ') igual ou maior que a receita (' + fmtMoeda(receitaMes) + ') neste mês -- margem de contribuição de ' + margemPct + '%. Sem sobra pra cobrir o custo fixo, o Ponto de Equilíbrio não se aplica aqui.';
+      }
+      peTexto = '<span class="ins-neutro" title="' + motivo + '">— ⓘ</span>';
     }
     return '<tr><td>' + m.nome + '</td><td>' + peTexto + '</td><td>' + (receitaMes !== null ? fmtMoeda(receitaMes) : '—') + '</td><td>' + statusHtml + '</td></tr>';
   }).join('');
@@ -1187,12 +1228,12 @@ function renderizarInsights() {
     (mediaReceitaPE !== null ? fmtMoeda(mediaReceitaPE) : '—') + '</td><td></td></tr>';
 
   const custosHtml = '<div class="ins-grid ins-grid-3">' +
-    '<div class="ins-card"><div class="ins-kpi-label">Custo Fixo Mensal</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Custo Fixo Mensal' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value">' + fmtMoeda(ultimo.fixo) + '</div>' +
     '<div class="ins-delta ' + insClasseVariacao(varFixo) + '">' + insFmtPct(varFixo) + ' vs mês anterior</div>' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasMiniTabelaCusto('fixo') + '</tbody></table></div>' +
 
-    '<div class="ins-card"><div class="ins-kpi-label">Custo Variável Mensal</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Custo Variável Mensal' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value">' + fmtMoeda(ultimo.variavel) + '</div>' +
     '<div class="ins-delta ' + insClasseVariacao(varVariavel) + '">' + insFmtPct(varVariavel) + ' vs mês anterior</div>' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Valor</th></tr></thead><tbody>' + linhasMiniTabelaCusto('variavel') + '</tbody></table></div>' +
@@ -1200,7 +1241,7 @@ function renderizarInsights() {
     '<div class="ins-card"><div class="ins-kpi-label">Ponto de Equilíbrio (' + nomeMesAtual + ')</div>' +
     '<div class="ins-kpi-value" style="color:var(--laranja)">' + (pontoEquilibrioAtual !== null ? fmtMoeda(pontoEquilibrioAtual) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">receita mínima pra cobrir os custos do mês</div>' +
-    '<div class="ins-delta ins-neutro" style="margin-top:2px;line-height:1.4">Fórmula: Custo Fixo ÷ Margem de Contribuição, onde Margem de Contribuição = (Receita − Custo Variável) ÷ Receita. Em meses com margem muito baixa (⚠️ na tabela), o cálculo fica instável e dispara — não use esses valores como referência.</div>' +
+    '<div class="ins-delta ins-neutro" style="margin-top:2px;line-height:1.4">Fórmula: Custo Fixo ÷ Margem de Contribuição, onde Margem de Contribuição = (Receita − Custo Variável) ÷ Receita. Quando o custo variável do mês é igual ou maior que a receita, a margem fica zero ou negativa e o cálculo não se aplica — a tabela mostra "— ⓘ" (passe o mouse pra ver o motivo daquele mês). Em meses com margem muito baixa mas positiva (⚠️ na tabela), o cálculo fica matematicamente instável e dispara — não use esses valores como referência.</div>' +
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>Ponto de Equilíbrio</th><th>Receita Real</th><th>Status</th></tr></thead><tbody>' + linhasPontoEquilibrio + linhaMediaPontoEquilibrio + '</tbody></table></div>' +
     '</div>';
 
@@ -1336,7 +1377,7 @@ function renderizarInsights() {
 
   const indicadoresHtml = '<div class="ins-grid ins-grid-5">' +
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
-    '<div class="ins-kpi-label">Ticket Médio de Venda (Média) <span class="ins-expandir-seta">▾</span></div>' +
+    '<div class="ins-kpi-label">Ticket Médio de Venda (Média)' + insBaseTag('DRE') + ' <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (ticketMedioMedia !== null ? fmtMoeda(ticketMedioMedia) : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">' + (ticketMedioValidos.length > 0 ? 'média de ' + numeroVendasMedia.toFixed(1) + ' venda(s)/mês · ' + ticketMedioValidos.length + ' mês(es) com nº de vendas informado' : 'informe o nº de vendas do mês pra calcular') + ' · clique pra detalhar</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
@@ -1344,7 +1385,7 @@ function renderizarInsights() {
     '</div></div>' +
 
     '<div class="ins-card ins-card-expandivel" onclick="insToggleExpandivel(this)">' +
-    '<div class="ins-kpi-label">Comissão sobre a Receita (Média) <span class="ins-expandir-seta">▾</span></div>' +
+    '<div class="ins-kpi-label">Comissão sobre a Receita (Média)' + insBaseTag('DRE') + ' <span class="ins-expandir-seta">▾</span></div>' +
     '<div class="ins-kpi-value">' + (comissaoMedia !== null ? comissaoMedia.toFixed(1) + '%' : '—') + '</div>' +
     '<div class="ins-delta ins-neutro">' + (comissaoValidos.length > 0 ? 'média de ' + comissaoValidos.length + ' mês(es)' : 'sem dado de comissão') + ' · clique pra detalhar</div>' +
     '<div class="ins-expandivel-corpo" onclick="event.stopPropagation()">' +
@@ -1359,11 +1400,11 @@ function renderizarInsights() {
     '<table class="ins-mini-table"><thead><tr><th>Mês</th><th>% da Receita</th></tr></thead><tbody>' + linhasDespesasFixas + '</tbody></table>' +
     '</div></div>' +
 
-    '<div class="ins-card"><div class="ins-kpi-label">Capital de Giro (hoje)</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Capital de Giro (hoje)' + insBaseTag('Lançamentos (Omie)') + '</div>' +
     '<div class="ins-kpi-value ' + insClasseVariacao(capitalDeGiro) + '">' + fmtMoeda(capitalDeGiro) + '</div>' +
     '<div class="ins-delta ins-neutro">Caixa + A Receber (' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias) − A Pagar (' + INSIGHTS_CONFIG.diasAReceberPagar + ' dias)</div></div>' +
 
-    '<div class="ins-card"><div class="ins-kpi-label">EBITDA Acumulado no Ano</div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">EBITDA Acumulado no Ano' + insBaseTag('DRE') + '</div>' +
     '<div class="ins-kpi-value ' + insClasseVariacao(ebitdaYtd) + '">' + fmtMoeda(ebitdaYtd) + '</div>' +
     '<div class="ins-delta ins-neutro">Jan a ' + nomeMesAtual + ' (' + mesesComEbitda + ' mês(es))</div></div>' +
     '</div>';
@@ -1384,9 +1425,9 @@ function renderizarInsights() {
     : '<div class="vazio">Nenhuma conta abaixo de ' + fmtMoeda(INSIGHTS_CONFIG.limiteSaldoBaixo) + '.</div>';
 
   const alertasHtml = '<div class="ins-grid ins-grid-3">' +
-    '<div class="ins-card"><div class="ins-kpi-label">Top 5 categorias de despesa (' + nomeMesAtual + ')</div><div class="ins-alert-list">' + (linhasTopCategorias || '<div class="vazio">Sem despesas no mês.</div>') + '</div></div>' +
-    '<div class="ins-card"><div class="ins-kpi-label">Departamento com maior alta</div><div class="ins-alert-list">' + deptoHtml + '</div></div>' +
-    '<div class="ins-card"><div class="ins-kpi-label">Contas com saldo baixo (&lt; ' + fmtMoeda(INSIGHTS_CONFIG.limiteSaldoBaixo) + ')</div><div class="ins-alert-list">' + contasBaixasHtml + '</div></div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Top 5 categorias de despesa (' + nomeMesAtual + ')' + insBaseTag('Lançamentos (Omie)') + '</div><div class="ins-alert-list">' + (linhasTopCategorias || '<div class="vazio">Sem despesas no mês.</div>') + '</div></div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Departamento com maior alta' + insBaseTag('Lançamentos (Omie)') + '</div><div class="ins-alert-list">' + deptoHtml + '</div></div>' +
+    '<div class="ins-card"><div class="ins-kpi-label">Contas com saldo baixo (&lt; ' + fmtMoeda(INSIGHTS_CONFIG.limiteSaldoBaixo) + ')' + insBaseTag('Lançamentos (Omie)') + '</div><div class="ins-alert-list">' + contasBaixasHtml + '</div></div>' +
     '</div>';
 
   document.getElementById('insightsRoot').innerHTML =
@@ -1395,7 +1436,7 @@ function renderizarInsights() {
     '<h2>💰 Saúde de Caixa</h2>' + saudeHtml +
     '<h2>📌 Outros Indicadores</h2>' + indicadoresHtml +
     '<h2>🎯 Custo Fixo × Variável & Ponto de Equilíbrio</h2>' + custosHtml +
-    '<h2>🏢 Comparativo entre Empresas (' + nomeMesAtual + ')</h2>' + comparativoHtml +
+    '<h2>🏢 Comparativo entre Empresas (' + nomeMesAtual + ')' + insBaseTag('Lançamentos (Omie)') + '</h2>' + comparativoHtml +
     '<h2>⚠️ Alertas Automáticos</h2>' + alertasHtml;
 }
 
@@ -3952,6 +3993,8 @@ function mostrarAba(nome) {{
   // isso recalculamos aqui, toda vez que troca de aba.
   if (nome === 'DFC' || nome === 'DRE') {{
     atualizarLarguraScrollDreDfc();
+  }} else if (nome === 'Comercial') {{
+    atualizarLarguraScrollComercial();
   }}
 }}
 
