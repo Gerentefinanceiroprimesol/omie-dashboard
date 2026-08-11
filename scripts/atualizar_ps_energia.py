@@ -55,7 +55,11 @@ def chamar_gdash(caminho, params=None, tentativas=4):
     ultimo_erro = None
     for tentativa in range(1, tentativas + 1):
         try:
-            req = Request(url, headers={"accept": "application/json"})
+            req = Request(url, headers={
+                "accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            })
             with urlopen(req, timeout=30) as resp:
                 corpo = resp.read().decode("utf-8")
                 return json.loads(corpo)
