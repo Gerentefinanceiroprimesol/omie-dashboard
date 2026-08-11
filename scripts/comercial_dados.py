@@ -34,6 +34,10 @@ from collections import defaultdict
 
 MESES_COMERCIAL = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul"]  # adicionar mês novo aqui
 
+# Lojas na ordem em que devem aparecer nas tabelas (Matriz -> Lagos -> Cabo
+# Frio). Usada pelos cards que quebram faturamento/ticket médio por loja.
+LOJAS_COMERCIAL = ["Prime Sol Matriz", "Prime Sol Lagos", "Prime Sol Cabo Frio"]
+
 NOME_ELLEN = "ELLEN CRISTINA VALENTIM NEVES"
 
 # Lojas padronizadas (igual ao DRE/DFC): Prime Sol Matriz / Prime Sol
@@ -93,10 +97,10 @@ COMERCIAL_VENDAS = [
     ("Jan", "Prime Sol Matriz", "LEANDRO", "INTERNO", 12340, 477.97),
     ("Jan", "Prime Sol Matriz", "LEANDRO", "INTERNO", 12340, 482.26),
     ("Jan", "Prime Sol Cabo Frio", "LUCIANO", "EXTERNO", 19980, 0),
-    ("Jan", "Prime Sol Cabo Frio", "MARIANNA", "INTERNO", 11480, None),
-    ("Jan", "Prime Sol Cabo Frio", "MARIANNA", "INTERNO", 9980, None),
-    ("Jan", "Prime Sol Cabo Frio", "MARIANNA", "INTERNO", 11750, None),
-    ("Jan", "Prime Sol Cabo Frio", "MARIANNA", "INTERNO", 9980, None),
+    ("Jan", "Prime Sol Cabo Frio", "MARIANNA DE ARAUJO", "INTERNO", 11480, None),
+    ("Jan", "Prime Sol Cabo Frio", "MARIANNA DE ARAUJO", "INTERNO", 9980, None),
+    ("Jan", "Prime Sol Cabo Frio", "MARIANNA DE ARAUJO", "INTERNO", 11750, None),
+    ("Jan", "Prime Sol Cabo Frio", "MARIANNA DE ARAUJO", "INTERNO", 9980, None),
     ("Jan", "Prime Sol Matriz", "DIANGELO", "INTERNO", 66980, 2277.32),
     ("Jan", "Prime Sol Lagos", "CÁSSIO", "INTERNO", 11920, 423.71),
     ("Jan", "Prime Sol Lagos", "CÁSSIO", "INTERNO", 16019.43, 308.96),
@@ -159,7 +163,7 @@ COMERCIAL_VENDAS = [
     ("Jan", "Prime Sol Matriz", "DIANGELO", "INTERNO", 5980, 203.32),
     ("Jan", "Prime Sol Matriz", "DIANGELO", "INTERNO", 10980, 373.32),
     ("Jan", "Prime Sol Matriz", "DIANGELO", "INTERNO", 11253.71, 373.32),
-    ("Jan", "Prime Sol Cabo Frio", "MARIANNA", "INTERNO", 15480, None),
+    ("Jan", "Prime Sol Cabo Frio", "MARIANNA DE ARAUJO", "INTERNO", 15480, None),
     ("Jan", "Prime Sol Lagos", "GLEIDSON", "INTERNO", 21575.2, 544.48),
     ("Jan", "Prime Sol Lagos", "GLEIDSON", "INTERNO", 12060, 501.77),
     ("Jan", "Prime Sol Lagos", "CÁSSIO", "INTERNO", 11760, 242.66),
@@ -889,42 +893,91 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
 
     fat_total = sum(ag["fat_mes_total"].values())
     com_total = sum(ag["com_mes_total"].values())
+    n_meses = len(meses)
 
-    # ---- Card hero: comissão total + mini-tabela por mês ----
+    def _valor_loja_mes(loja, mes):
+        return ag["por_loja_mes"].get(loja, {}).get(mes, 0)
+
+    # ---- Card hero: comissão total + mini-tabela por mês, com faturamento
+    # quebrado por loja (Matriz/Lagos/Cabo Frio) + Total, e linhas de Total
+    # e Média no fim do período ----
     linhas_mes = "".join(
-        f"<tr><td>{m}</td><td>{_fmt_moeda(ag['fat_mes_total'].get(m, 0))}</td>"
+        f"<tr><td>{m}</td>"
+        + "".join(f"<td>{_fmt_moeda(_valor_loja_mes(loja, m))}</td>" for loja in LOJAS_COMERCIAL)
+        + f"<td>{_fmt_moeda(ag['fat_mes_total'].get(m, 0))}</td>"
         f"<td>{_fmt_moeda(ag['com_mes_total'].get(m, 0))}</td></tr>"
         for m in meses
+    )
+    total_por_loja = {loja: sum(_valor_loja_mes(loja, m) for m in meses) for loja in LOJAS_COMERCIAL}
+    linha_total_mini = (
+        "<tr class='com-total'><td>Total</td>"
+        + "".join(f"<td>{_fmt_moeda(total_por_loja[loja])}</td>" for loja in LOJAS_COMERCIAL)
+        + f"<td>{_fmt_moeda(fat_total)}</td>"
+        f"<td>{_fmt_moeda(com_total)}</td></tr>"
+    )
+    linha_media_mini = (
+        "<tr class='com-total'><td>Média</td>"
+        + "".join(f"<td>{_fmt_moeda(total_por_loja[loja] / n_meses if n_meses else 0)}</td>" for loja in LOJAS_COMERCIAL)
+        + f"<td>{_fmt_moeda(fat_total / n_meses if n_meses else 0)}</td>"
+        f"<td>{_fmt_moeda(com_total / n_meses if n_meses else 0)}</td></tr>"
     )
     card_hero = (
         "<div class=\'com-card com-hero com-card-exp\' onclick=\'comToggle(this)\'>"
         f"<div class=\'com-label\'>Comissão comercial total ({meses[0]}-{meses[-1]}/26) <span class=\'com-seta\'>&#9662;</span></div>"
         f"<div class=\'com-hero-val\'>{_fmt_moeda(com_total)}</div>"
         f"<div class=\'com-sub\'>sobre {_fmt_moeda(fat_total)} de faturamento &middot; clique pra ver por mês</div>"
-        f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Mês</th><th>Faturamento</th><th>Comissão</th></tr></thead>"
-        f"<tbody>{linhas_mes}</tbody></table></div></div>"
+        f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>Faturamento Total</th><th>Comissão</th></tr></thead>"
+        f"<tbody>{linhas_mes}{linha_total_mini}{linha_media_mini}</tbody></table></div></div>"
     )
 
-    # ---- Card: faturamento por loja ----
+    # ---- Card: faturamento por loja -- resumo (loja que mais faturou no
+    # período) no card fechado; ao expandir, tabela com o % que cada loja
+    # representou em cada mês, mais uma linha de Média ----
     lojas_ordenadas = sorted(ag["fat_loja_total"].items(), key=lambda x: -x[1])
     loja_top, loja_top_val = lojas_ordenadas[0] if lojas_ordenadas else ("-", 0)
     pct_top = (loja_top_val / fat_total * 100) if fat_total else 0
-    cores_loja = ["var(--laranja)", "var(--accent)", "#7dd3fc", "#4ade80"]
-    barras_loja = "".join(
-        f"<div class=\'com-bar-linha\'><span class=\'com-bar-nome\'>{loja}</span>"
-        f"<div class=\'com-bar-trilha\'><div class=\'com-bar-fill\' style=\'width:{(v/loja_top_val*100 if loja_top_val else 0):.0f}%;background:{cores_loja[i % len(cores_loja)]}\'></div></div>"
-        f"<span class=\'com-bar-valor\'>{_fmt_moeda_compacta(v)}</span></div>"
-        for i, (loja, v) in enumerate(lojas_ordenadas)
+
+    def _pct_loja_mes(loja, mes):
+        total_mes = ag["fat_mes_total"].get(mes, 0)
+        if not total_mes:
+            return None
+        return _valor_loja_mes(loja, mes) / total_mes * 100
+
+    linhas_pct_loja = "".join(
+        f"<tr><td>{m}</td>"
+        + "".join(
+            f"<td>{(f'{_pct_loja_mes(loja, m):.1f}%' if _pct_loja_mes(loja, m) is not None else '—')}</td>"
+            for loja in LOJAS_COMERCIAL
+        )
+        + "</tr>"
+        for m in meses
+    )
+    medias_pct_loja = {}
+    for loja in LOJAS_COMERCIAL:
+        valores = [_pct_loja_mes(loja, m) for m in meses if _pct_loja_mes(loja, m) is not None]
+        medias_pct_loja[loja] = sum(valores) / len(valores) if valores else None
+    linha_media_pct_loja = (
+        "<tr class='com-total'><td>Média</td>"
+        + "".join(
+            f"<td>{(f'{medias_pct_loja[loja]:.1f}%' if medias_pct_loja[loja] is not None else '—')}</td>"
+            for loja in LOJAS_COMERCIAL
+        )
+        + "</tr>"
     )
     card_loja = (
-        "<div class=\'com-card com-card-exp\' onclick=\'comToggle(this)\'>"
-        f"<div class=\'com-label\'>Faturamento por loja <span class=\'com-seta\'>&#9662;</span></div>"
-        f"<div class=\'com-value\'>{loja_top}</div>"
-        f"<div class=\'com-sub\'>{pct_top:.0f}% do faturamento total</div>"
-        f"<div class=\'com-corpo\'>{barras_loja}</div></div>"
+        "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
+        f"<div class='com-label'>Faturamento por loja <span class='com-seta'>&#9662;</span></div>"
+        f"<div class='com-value'>{loja_top}</div>"
+        f"<div class='com-sub'>{pct_top:.0f}% do faturamento total ({meses[0]}-{meses[-1]}/26) &middot; clique pra ver % mês a mês</div>"
+        f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th></tr></thead>"
+        f"<tbody>{linhas_pct_loja}{linha_media_pct_loja}</tbody></table></div></div>"
     )
 
-    # ---- Card: vendedor que mais faturou ----
+    # ---- Card: vendedor que mais faturou -- ao expandir, um bloco por mês
+    # com o top5 vendedores DAQUELE mês (nome, faturamento, % do mês),
+    # seguido de um bloco Total com o top5 do período inteiro (%do período
+    # + média do % mensal que cada um representou, só nos meses em que
+    # teve venda) ----
     fat_vendedor_total = {v: sum(meses_v.values()) for v, meses_v in ag["por_vendedor_mes"].items()}
     n_vendas_vendedor = defaultdict(int)
     com_vendedor_total = defaultdict(float)
@@ -936,17 +989,56 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     ranking_vendedor = sorted(fat_vendedor_total.items(), key=lambda x: -x[1])
     top5 = ranking_vendedor[:5]
     vend_top, vend_top_val = ranking_vendedor[0] if ranking_vendedor else ("-", 0)
-    linhas_top5 = "".join(
-        f"<tr><td>{v.title()}</td><td>{_fmt_moeda_compacta(val)}</td><td>{_fmt_moeda_compacta(com_vendedor_total.get(v, 0))}</td></tr>"
+
+    def _pct_vendedor_mes(vendedor, mes):
+        total_mes = ag["fat_mes_total"].get(mes, 0)
+        if not total_mes:
+            return None
+        valor = ag["por_vendedor_mes"].get(vendedor, {}).get(mes, 0)
+        if not valor:
+            return None
+        return valor / total_mes * 100
+
+    secoes_mensais = []
+    for mes in meses:
+        ranking_mes = sorted(
+            ((v, ag["por_vendedor_mes"].get(v, {}).get(mes, 0)) for v in ag["por_vendedor_mes"]),
+            key=lambda x: -x[1],
+        )
+        ranking_mes = [(v, val) for v, val in ranking_mes if val > 0][:5]
+        total_mes = ag["fat_mes_total"].get(mes, 0)
+        linhas_mes_top5 = "".join(
+            f"<tr><td>{v.title()}</td><td>{_fmt_moeda_compacta(val)}</td><td>{(val / total_mes * 100 if total_mes else 0):.1f}%</td></tr>"
+            for v, val in ranking_mes
+        )
+        secoes_mensais.append(
+            f"<div class='com-mes-bloco'><div class='com-mes-titulo'>{mes}</div>"
+            f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do mês</th></tr></thead>"
+            f"<tbody>{linhas_mes_top5}</tbody></table></div>"
+        )
+    html_meses_vendedor = "".join(secoes_mensais)
+
+    def _media_pct_vendedor(vendedor):
+        valores = [p for p in (_pct_vendedor_mes(vendedor, m) for m in meses) if p is not None]
+        return sum(valores) / len(valores) if valores else None
+
+    linhas_total_top5 = "".join(
+        f"<tr><td>{v.title()}</td><td>{_fmt_moeda_compacta(val)}</td>"
+        f"<td>{(val / fat_total * 100 if fat_total else 0):.1f}%</td>"
+        f"<td>{(f'{_media_pct_vendedor(v):.1f}%' if _media_pct_vendedor(v) is not None else '—')}</td></tr>"
         for v, val in top5
     )
+    bloco_total_vendedor = (
+        f"<div class='com-mes-bloco com-mes-bloco-total'><div class='com-mes-titulo'>Total ({meses[0]}-{meses[-1]}/26)</div>"
+        f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do período</th><th>Média % mensal</th></tr></thead>"
+        f"<tbody>{linhas_total_top5}</tbody></table></div>"
+    )
     card_vendedor = (
-        "<div class=\'com-card com-card-exp\' onclick=\'comToggle(this)\'>"
-        f"<div class=\'com-label\'>Vendedor que mais faturou <span class=\'com-seta\'>&#9662;</span></div>"
-        f"<div class=\'com-value\' style=\'color:var(--laranja)\'>{vend_top.title()}</div>"
-        f"<div class=\'com-sub\'>{_fmt_moeda_compacta(vend_top_val)} &middot; {n_vendas_vendedor.get(vend_top, 0)} vendas &middot; {ag['modalidade_vendedor'].get(vend_top, '-').title()}</div>"
-        f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>Comissão</th></tr></thead>"
-        f"<tbody>{linhas_top5}</tbody></table></div></div>"
+        "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
+        f"<div class='com-label'>Vendedor que mais faturou <span class='com-seta'>&#9662;</span></div>"
+        f"<div class='com-value' style='color:var(--laranja)'>{vend_top.title()}</div>"
+        f"<div class='com-sub'>{_fmt_moeda_compacta(vend_top_val)} &middot; {n_vendas_vendedor.get(vend_top, 0)} vendas &middot; {ag['modalidade_vendedor'].get(vend_top, '-').title()}</div>"
+        f"<div class='com-corpo'>{html_meses_vendedor}{bloco_total_vendedor}</div></div>"
     )
 
     # ---- Card: interno x externo ----
@@ -956,37 +1048,69 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     pct_int = (fat_int / total_modal * 100) if total_modal else 0
     pct_ext = 100 - pct_int
     card_modalidade = (
-        "<div class=\'com-card com-card-exp\' onclick=\'comToggle(this)\'>"
-        f"<div class=\'com-label\'>Interno x Externo <span class=\'com-seta\'>&#9662;</span></div>"
-        f"<div class=\'com-value\'>{pct_int:.0f}% / {pct_ext:.0f}%</div>"
-        f"<div class=\'com-sub\'>faturamento interno vs externo</div>"
-        f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Modalidade</th><th>Faturamento</th><th>Comissão</th><th>Vendas</th></tr></thead><tbody>"
+        "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
+        f"<div class='com-label'>Interno x Externo <span class='com-seta'>&#9662;</span></div>"
+        f"<div class='com-value'>{pct_int:.0f}% / {pct_ext:.0f}%</div>"
+        f"<div class='com-sub'>faturamento interno vs externo</div>"
+        f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Modalidade</th><th>Faturamento</th><th>Comissão</th><th>Vendas</th></tr></thead><tbody>"
         f"<tr><td>Interno</td><td>{_fmt_moeda_compacta(fat_int)}</td><td>{_fmt_moeda_compacta(ag['por_modalidade']['INTERNO']['comissao'])}</td><td>{ag['por_modalidade']['INTERNO']['vendas']}</td></tr>"
         f"<tr><td>Externo</td><td>{_fmt_moeda_compacta(fat_ext)}</td><td>{_fmt_moeda_compacta(ag['por_modalidade']['EXTERNO']['comissao'])}</td><td>{ag['por_modalidade']['EXTERNO']['vendas']}</td></tr>"
         f"</tbody></table></div></div>"
     )
 
-    # ---- Card: vendedores por loja ----
-    vendedores_por_loja = defaultdict(set)
-    for vendedor, loja in ag["loja_vendedor"].items():
-        vendedores_por_loja[loja].add(vendedor)
-    linhas_vend_loja = "".join(
-        f"<tr><td>{loja}</td><td>{len(vs)}</td></tr>" for loja, vs in sorted(vendedores_por_loja.items(), key=lambda x: -len(x[1]))
+    # ---- Card: Ticket Médio -- geral no card fechado; ao expandir, tabela
+    # mês a mês com o ticket médio de cada loja + coluna Total (todas as
+    # lojas daquele mês). Ticket médio = faturamento ÷ nº de vendas
+    # (contagem de linhas em COMERCIAL_VENDAS) -- fonte diferente do
+    # "Ticket Médio de Venda" da aba Insights (que usa numeroVendas
+    # informado manualmente na DRE), mas o faturamento total dos dois deve
+    # bater, já que vêm da mesma base de receita.
+    vendas_loja_mes = defaultdict(lambda: defaultdict(int))
+    for mes, loja, vendedor, modalidade, valor, comissao in COMERCIAL_VENDAS:
+        if valor is not None:
+            vendas_loja_mes[loja][mes] += 1
+
+    total_vendas_periodo = sum(vendas_loja_mes[loja][mes] for loja in LOJAS_COMERCIAL for mes in meses)
+    ticket_medio_geral = (fat_total / total_vendas_periodo) if total_vendas_periodo else None
+
+    def _ticket_medio_loja_mes(loja, mes):
+        n = vendas_loja_mes[loja].get(mes, 0)
+        if not n:
+            return None
+        return _valor_loja_mes(loja, mes) / n
+
+    def _ticket_medio_total_mes(mes):
+        n_total = sum(vendas_loja_mes[loja].get(mes, 0) for loja in LOJAS_COMERCIAL)
+        if not n_total:
+            return None
+        return ag['fat_mes_total'].get(mes, 0) / n_total
+
+    linhas_ticket_medio = "".join(
+        f"<tr><td>{m}</td>"
+        + "".join(
+            f"<td>{(_fmt_moeda(_ticket_medio_loja_mes(loja, m)) if _ticket_medio_loja_mes(loja, m) is not None else '—')}</td>"
+            for loja in LOJAS_COMERCIAL
+        )
+        + f"<td>{(_fmt_moeda(_ticket_medio_total_mes(m)) if _ticket_medio_total_mes(m) is not None else '—')}</td></tr>"
+        for m in meses
     )
-    card_vend_loja = (
-        "<div class=\'com-card com-card-exp\' onclick=\'comToggle(this)\'>"
-        f"<div class=\'com-label\'>Vendedores por loja <span class=\'com-seta\'>&#9662;</span></div>"
-        f"<div class=\'com-value\'>{len(ag['loja_vendedor'])} vendedores</div>"
-        f"<div class=\'com-sub\'>ativos em {meses[0]}-{meses[-1]}/26</div>"
-        f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Loja</th><th>Vendedores</th></tr></thead>"
-        f"<tbody>{linhas_vend_loja}</tbody></table></div></div>"
+    card_ticket_medio = (
+        "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
+        f"<div class='com-label'>Ticket Médio <span class='com-seta'>&#9662;</span></div>"
+        f"<div class='com-value'>{(_fmt_moeda(ticket_medio_geral) if ticket_medio_geral is not None else '—')}</div>"
+        f"<div class='com-sub'>média geral ({meses[0]}-{meses[-1]}/26) &middot; clique pra ver por loja e mês</div>"
+        f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>Total</th></tr></thead>"
+        f"<tbody>{linhas_ticket_medio}</tbody></table></div></div>"
     )
 
-    # ---- Tabela "Desempenho por Vendedor" (estilo DRE/DFC) ----
+    # ---- Tabela "Desempenho por Vendedor" (estilo DRE/DFC): ordem
+    # alfabética, cabeçalho fixo (2 linhas), primeira coluna (nome) fixa
+    # lateral, altura máxima com scroll vertical, e barra de rolagem
+    # horizontal duplicada (topo + embaixo), sincronizadas ----
     thead_meses = "".join(f"<th colspan=\'3\'>{m}</th>" for m in meses)
     thead_sub = "<th>Vendedor</th>" + "<th>Total Vendas</th><th>% Fat.</th><th>Variação</th>" * len(meses)
 
-    ranking_tabela = sorted(fat_vendedor_total.items(), key=lambda x: -x[1])
+    ranking_tabela = sorted(fat_vendedor_total.items(), key=lambda x: x[0].title())
     linhas_tabela = []
     for vendedor, _ in ranking_tabela:
         celulas = []
@@ -1013,16 +1137,22 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     linhas_tabela_html = "".join(linhas_tabela)
     tabela_desempenho = (
         "<div class='com-tabela-titulo'>Desempenho por Vendedor &middot; faturamento mensal, % do total e variação vs mês anterior</div>"
+        "<div class='com-scroll-topo'><div class='com-scroll-topo-inner'></div></div>"
         "<div class='com-tabela-wrap'><table class='com-tabela'>"
         f"<thead><tr><th></th>{thead_meses}</tr><tr>{thead_sub}</tr></thead>"
         f"<tbody>{linhas_tabela_html}</tbody></table></div>"
     )
 
     css = """
+  #abaComercial .com-wrap { padding: 20px 32px 40px; }
   #abaComercial .com-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
   #abaComercial .com-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
-  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s; }
+  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s; position: relative; }
   #abaComercial .com-card-exp:hover { border-color: var(--laranja); }
+  #abaComercial .com-card-exp::after {
+    content: 'clique para detalhar ▾'; position: absolute; top: 12px; right: 14px;
+    font-size: 9.5px; color: var(--text-faint); opacity: 1;
+  }
   #abaComercial .com-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
   #abaComercial .com-value { font-size: 21px; font-weight: 800; }
   #abaComercial .com-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
@@ -1035,20 +1165,22 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-mini th:first-child, #abaComercial .com-mini td:first-child { text-align: left; }
   #abaComercial .com-mini td { text-align: right; padding: 5px; border-bottom: 1px solid var(--border); }
   #abaComercial .com-mini tr:last-child td { border-bottom: none; font-weight: 700; }
+  #abaComercial .com-mes-bloco { margin-top: 10px; }
+  #abaComercial .com-mes-titulo { font-size: 10.5px; font-weight: 700; color: var(--laranja); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
+  #abaComercial .com-mes-bloco-total { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 14px; }
   #abaComercial .com-hero { grid-column: 1 / -1; background: rgba(250,168,33,0.08); border: 1px solid var(--laranja); }
   #abaComercial .com-hero-val { font-size: 30px; font-weight: 800; color: var(--laranja); }
-  #abaComercial .com-bar-linha { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 11.5px; }
-  #abaComercial .com-bar-nome { width: 110px; flex-shrink: 0; }
-  #abaComercial .com-bar-trilha { flex: 1; height: 7px; background: var(--bg); border-radius: 4px; overflow: hidden; }
-  #abaComercial .com-bar-fill { height: 100%; border-radius: 4px; }
-  #abaComercial .com-bar-valor { width: 70px; text-align: right; flex-shrink: 0; }
   #abaComercial .com-tabela-titulo { font-size: 13px; color: var(--text-muted); margin: 4px 0 10px; }
-  #abaComercial .com-tabela-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-  #abaComercial .com-tabela { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 900px; }
-  #abaComercial .com-tabela th { background: var(--bg-panel); color: var(--text-muted); font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .03em; padding: 8px 6px; border-bottom: 2px solid var(--laranja); text-align: right; }
-  #abaComercial .com-tabela th:first-child { text-align: left; position: sticky; left: 0; background: var(--bg-panel); z-index: 2; }
+  #abaComercial .com-scroll-topo { overflow-x: auto; overflow-y: hidden; height: 14px; }
+  #abaComercial .com-scroll-topo-inner { height: 1px; }
+  #abaComercial .com-tabela-wrap { overflow-x: auto; overflow-y: auto; max-height: 65vh; border: 1px solid var(--border); border-radius: var(--radius); }
+  #abaComercial .com-tabela { border-collapse: collapse; width: auto; min-width: 100%; font-size: 12px; white-space: nowrap; table-layout: auto; }
+  #abaComercial .com-tabela th { background: var(--bg-panel); color: var(--text-muted); font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .03em; padding: 8px 6px; border-bottom: 2px solid var(--laranja); text-align: right; position: sticky; z-index: 2; }
+  #abaComercial .com-tabela thead tr:first-child th { top: 0; }
+  #abaComercial .com-tabela thead tr:nth-child(2) th { top: 29px; }
+  #abaComercial .com-tabela th:first-child { text-align: left; position: sticky; left: 0; z-index: 3; background: var(--bg-panel); }
   #abaComercial .com-tabela td { padding: 6px; border-bottom: 1px solid var(--border); text-align: right; }
-  #abaComercial .com-tabela td:first-child { text-align: left; font-weight: 700; position: sticky; left: 0; background: var(--bg); }
+  #abaComercial .com-tabela td:first-child { text-align: left; font-weight: 700; position: sticky; left: 0; background: var(--bg); z-index: 1; }
   #abaComercial .com-tabela tr:hover td { background: var(--bg-card); }
   #abaComercial .com-delta-vazio { color: var(--text-faint); }
   #abaComercial .com-up { color: var(--green); }
@@ -1059,19 +1191,41 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     script = """
 <script>
 function comToggle(cardEl) { cardEl.classList.toggle('aberto'); }
+function atualizarLarguraScrollComercial() {
+  const wrap = document.querySelector('.com-tabela-wrap');
+  const scrollTopo = document.querySelector('.com-scroll-topo');
+  const scrollTopoInner = document.querySelector('.com-scroll-topo-inner');
+  if (!wrap || !scrollTopo || !scrollTopoInner) return;
+  scrollTopoInner.style.width = wrap.querySelector('table').scrollWidth + 'px';
+  let sincronizando = false;
+  scrollTopo.onscroll = function () {
+    if (sincronizando) return;
+    sincronizando = true;
+    wrap.scrollLeft = scrollTopo.scrollLeft;
+    sincronizando = false;
+  };
+  wrap.onscroll = function () {
+    if (sincronizando) return;
+    sincronizando = true;
+    scrollTopo.scrollLeft = wrap.scrollLeft;
+    sincronizando = false;
+  };
+}
 </script>
 """
 
     html = f"""<style>{css}</style>
 <div id="abaComercial" style="display:none;">
-  <div class="com-grid">
-    {card_hero}
-    {card_loja}
-    {card_vendedor}
-    {card_modalidade}
-    {card_vend_loja}
+  <div class="com-wrap">
+    <div class="com-grid">
+      {card_hero}
+      {card_loja}
+      {card_vendedor}
+      {card_modalidade}
+      {card_ticket_medio}
+    </div>
+    {tabela_desempenho}
   </div>
-  {tabela_desempenho}
 </div>
 {script}"""
 
