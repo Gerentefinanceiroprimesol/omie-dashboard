@@ -4077,10 +4077,10 @@ def main():
     html = gerar_html(contas)
 
     os.makedirs("public", exist_ok=True)
-    with open("public/index.html", "w", encoding="utf-8") as f:
+    with open("public/financeiro.html", "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("Dashboard gerado em public/index.html")
+    print("Dashboard gerado em public/financeiro.html")
 
 
 if __name__ == "__main__":
