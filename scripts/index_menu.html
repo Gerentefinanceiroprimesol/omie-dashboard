@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prime Sol</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --laranja:#FAA821;
+    --azul:#365BDD;
+    --verde:#3FBF56;
+    --bg:#12141a;
+    --bg-card:#1b1e27;
+    --borda:#2a2e3a;
+    --texto:#e8e9ee;
+    --texto-mudo:#9aa0ab;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    background:var(--bg);
+    color:var(--texto);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  .wrap{
+    width:100%;
+    max-width:640px;
+    text-align:center;
+  }
+  .wrap h1{
+    font-size:26px;
+    margin:0 0 6px;
+  }
+  .wrap h1 span{ color:var(--laranja); }
+  .wrap p.sub{
+    color:var(--texto-mudo);
+    margin:0 0 36px;
+    font-size:14px;
+  }
+  .opcoes{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:18px;
+  }
+  @media (max-width:520px){
+    .opcoes{ grid-template-columns:1fr; }
+  }
+  a.opcao{
+    display:block;
+    text-decoration:none;
+    color:var(--texto);
+    background:var(--bg-card);
+    border:1px solid var(--borda);
+    border-radius:14px;
+    padding:32px 20px;
+    transition:border-color .15s, transform .15s;
+  }
+  a.opcao:hover{
+    border-color:var(--azul);
+    transform:translateY(-2px);
+  }
+  a.opcao .titulo{
+    font-size:17px;
+    font-weight:600;
+    margin-bottom:6px;
+  }
+  a.opcao .desc{
+    font-size:13px;
+    color:var(--texto-mudo);
+  }
+  a.opcao.laranja .titulo{ color:var(--laranja); }
+  a.opcao.azul .titulo{ color:var(--verde); }
+  a.opcao.azul:hover{ border-color:var(--verde); }
+  a.opcao.laranja:hover{ border-color:var(--laranja); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>PRIME <span>SOL</span></h1>
+    <p class="sub">Selecione o painel que deseja acessar</p>
+    <div class="opcoes">
+      <a class="opcao laranja" href="financeiro.html">
+        <div class="titulo">Dashboard Financeiro</div>
+        <div class="desc">Contas correntes, extratos e títulos (Omie)</div>
+      </a>
+      <a class="opcao azul" href="ps_energia.html">
+        <img src="data:image/png;base64,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" alt="" style="width:32px;height:32px;border-radius:8px;margin-bottom:8px;">
+        <div class="titulo">PS Energia</div>
+        <div class="desc">Relatórios de energia das usinas</div>
+      </a>
+    </div>
+  </div>
+</body>
+</html>
