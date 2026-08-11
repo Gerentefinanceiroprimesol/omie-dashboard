@@ -1,0 +1,28 @@
+{
+  "_comentario": "Mapeamento usina (nome no GDash) -> id da usina no SunWEG, extraído do relatório 'Usinas-08_2026.xlsx' exportado do GDash em 11/08/2026. Se cadastrar usina nova, exporte de novo no GDash e atualize este arquivo (coluna 'ID do Portal').",
+  "usinas": [
+    {"nomeUsinaGdash": "USINA INVEST Mirian Teresa Rabello dos Santos", "portal": "SunWeg", "idPortal": 133352},
+    {"nomeUsinaGdash": "USINA INVEST do Erval Vieira Junior", "portal": "SunWeg", "idPortal": 134791},
+    {"nomeUsinaGdash": "USINA INVEST Luna Maquiagens e Acessorios LTDA", "portal": "SunWeg", "idPortal": 124754},
+    {"nomeUsinaGdash": "USINA JOSE HUMBERTO FERREIRA DAS GRAÇAS 1", "portal": "SunWeg", "idPortal": 145549},
+    {"nomeUsinaGdash": "Usina INVEST Gevaldo da Silva Matta", "portal": "SunWeg", "idPortal": 127474},
+    {"nomeUsinaGdash": "USINA INVEST LWI SERVIÇOS DE ENGENHARIA", "portal": "SunWeg", "idPortal": 136243},
+    {"nomeUsinaGdash": "USINA JOSE HUMBERTO FERREIRA DAS GRAÇAS MEDIDOR 33411049", "portal": "SunWeg", "idPortal": 145548},
+    {"nomeUsinaGdash": "USINA INVEST Lucas Santos Freitas 3", "portal": "SunWeg", "idPortal": 143641},
+    {"nomeUsinaGdash": "USINA INVEST CARLOS ANDRE PERDESANE DA CRUZ", "portal": "SunWeg", "idPortal": 146253},
+    {"nomeUsinaGdash": "PR de Souza Gomes Junior LTDA", "portal": "SunWeg", "idPortal": 146836},
+    {"nomeUsinaGdash": "USINA INVEST Filipe Freitas Pinheiro", "portal": "SunWeg", "idPortal": 135741},
+    {"nomeUsinaGdash": "Usina Invest Brenpa Empreendimentos LTDA", "portal": "SunWeg", "idPortal": 145464},
+    {"nomeUsinaGdash": "USINA INVEST A. A. HESPANHOL ADMINISTRACAO", "portal": "SunWeg", "idPortal": 138585},
+    {"nomeUsinaGdash": "Usina Invest Lucas Rainha Viana", "portal": "PV_HUB", "idPortal": "1ed527b7-0e61-4af7-a357-fe7659d14778", "observacao": "Não é SunWEG, precisa de integração separada"},
+    {"nomeUsinaGdash": "USINA INVEST do Lucas Miranda Gomes", "portal": "SunWeg", "idPortal": 133540},
+    {"nomeUsinaGdash": "USINA INVEST Renata Moreira Felix", "portal": "SunWeg", "idPortal": 138865},
+    {"nomeUsinaGdash": "USINA INVEST do Lucas Santos Freitas 2", "portal": "SunWeg", "idPortal": 141216},
+    {"nomeUsinaGdash": "USINA INVEST JOSE AUGUSTO DA SILVA", "portal": "SunWeg", "idPortal": 142924},
+    {"nomeUsinaGdash": "USINA INVEST do Lucas Santos Freitas 1", "portal": "SunWeg", "idPortal": 124753},
+    {"nomeUsinaGdash": "USINA INVEST do Nelcimar Martins Siqueira", "portal": "SunWeg", "idPortal": 133505},
+    {"nomeUsinaGdash": "USINA INVEST Prédio Alphamalls - Delta Pi Holding LTDA", "portal": "SunWeg", "idPortal": 126397},
+    {"nomeUsinaGdash": "USINA INVEST da Denise Nehring Filoni", "portal": "SunWeg", "idPortal": 132450},
+    {"nomeUsinaGdash": "USINA INVEST do Alessandro Ferreira Goncalves", "portal": "SunWeg", "idPortal": 133806}
+  ]
+}

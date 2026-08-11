@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PS Energia</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --laranja:#FFAA00;
+    --verde:#007100;
+    --verde-clara:#3FBF56;
+    --bg:#0e1410;
+    --bg-card:#1a231b;
+    --borda:#2a3a2c;
+    --texto:#e8ece9;
+    --texto-mudo:#9aab9c;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    background:var(--bg);
+    color:var(--texto);
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    padding:24px;
+  }
+
+  /* ---------- TELA DE LOGIN ---------- */
+  #tela-login{
+    max-width:380px;
+    margin:8vh auto 0;
+    background:var(--bg-card);
+    border:1px solid var(--borda);
+    border-radius:14px;
+    padding:36px 32px;
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  #tela-login h1{
+    margin:0 0 4px;
+    font-size:22px;
+    text-align:center;
+    color:var(--laranja);
+  }
+  #tela-login p.sub{
+    margin:0 0 28px;
+    text-align:center;
+    color:var(--texto-mudo);
+    font-size:13px;
+  }
+  label{
+    display:block;
+    font-size:13px;
+    color:var(--texto-mudo);
+    margin-bottom:6px;
+  }
+  input[type="text"], input[type="password"]{
+    width:100%;
+    padding:11px 12px;
+    margin-bottom:18px;
+    border-radius:8px;
+    border:1px solid var(--borda);
+    background:#0e1015;
+    color:var(--texto);
+    font-size:14px;
+  }
+  input:focus{ outline:2px solid var(--verde-clara); }
+  button#btn-entrar{
+    width:100%;
+    padding:12px;
+    border:none;
+    border-radius:8px;
+    background:var(--laranja);
+    color:#1a1200;
+    font-weight:600;
+    font-size:14px;
+    cursor:pointer;
+  }
+  button#btn-entrar:hover{ filter:brightness(1.08); }
+  #erro-login{
+    color:#ff6b6b;
+    font-size:13px;
+    text-align:center;
+    margin-top:14px;
+    min-height:16px;
+  }
+
+  /* ---------- PAINEL (pós-login) ---------- */
+  #painel{
+    display:none;
+    max-width:1300px;
+    margin:0 auto;
+  }
+  header.topo{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:20px;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  header.topo h1{
+    margin:0;
+    font-size:24px;
+  }
+  header.topo h1 span{ color:var(--laranja); }
+  #btn-sair{
+    background:transparent;
+    border:1px solid var(--borda);
+    color:var(--texto-mudo);
+    padding:8px 14px;
+    border-radius:8px;
+    cursor:pointer;
+    font-size:13px;
+  }
+  #btn-sair:hover{ border-color:var(--verde-clara); color:var(--texto); }
+  .logo{
+    display:block;
+    width:64px;
+    height:64px;
+    margin:0 auto 12px;
+    border-radius:14px;
+  }
+  header.topo .marca{
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  header.topo .marca img{
+    width:40px;
+    height:40px;
+    border-radius:9px;
+  }
+
+  .resumo-topo{
+    font-size:12px;
+    color:var(--texto-mudo);
+    margin-bottom:16px;
+  }
+
+  .filtros{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-bottom:16px;
+  }
+  .filtros input, .filtros select{
+    padding:9px 12px;
+    border-radius:8px;
+    border:1px solid var(--borda);
+    background:var(--bg-card);
+    color:var(--texto);
+    font-size:13px;
+  }
+
+  .cards{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));
+    gap:14px;
+    margin-bottom:22px;
+  }
+  .card{
+    background:var(--bg-card);
+    border:1px solid var(--borda);
+    border-radius:12px;
+    padding:18px;
+  }
+  .card .rotulo{
+    font-size:11px;
+    color:var(--texto-mudo);
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    margin-bottom:6px;
+  }
+  .card .valor{
+    font-size:22px;
+    font-weight:700;
+    color:var(--laranja);
+  }
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13px;
+    background:var(--bg-card);
+    border:1px solid var(--borda);
+    border-radius:12px;
+    overflow:hidden;
+  }
+  thead th{
+    text-align:left;
+    padding:10px 12px;
+    background:#22263148;
+    color:var(--texto-mudo);
+    font-weight:600;
+    border-bottom:1px solid var(--borda);
+    white-space:nowrap;
+  }
+  tbody td{
+    padding:9px 12px;
+    border-bottom:1px solid var(--borda);
+    white-space:nowrap;
+  }
+  tbody tr:hover{ background:#ffffff08; }
+  tbody tr:last-child td{ border-bottom:none; }
+  .num{ text-align:right; font-variant-numeric:tabular-nums; }
+  .tabela-wrap{ overflow-x:auto; border-radius:12px; }
+
+  .vazio{
+    text-align:center;
+    color:var(--texto-mudo);
+    padding:30px;
+  }
+</style>
+</head>
+<body>
+
+  <!-- TELA DE LOGIN -->
+  <div id="tela-login">
+    <img class="logo" src="data:image/png;base64,__LOGO_PS_ENERGIA_BASE64__" alt="PS Energia">
+    <h1>PS ENERGIA</h1>
+    <p class="sub">Acesso restrito</p>
+    <form id="form-login" autocomplete="off">
+      <label for="usuario">Usuário</label>
+      <input type="text" id="usuario" autocomplete="username" required>
+      <label for="senha">Senha</label>
+      <input type="password" id="senha" autocomplete="current-password" required>
+      <button type="submit" id="btn-entrar">Entrar</button>
+      <div id="erro-login"></div>
+    </form>
+  </div>
+
+  <!-- PAINEL -->
+  <div id="painel">
+    <header class="topo">
+      <div class="marca">
+        <img src="data:image/png;base64,__LOGO_PS_ENERGIA_BASE64__" alt="PS Energia">
+        <h1>PS <span>ENERGIA</span></h1>
+      </div>
+      <button id="btn-sair">Sair</button>
+    </header>
+    <div class="resumo-topo" id="resumo-geracao">Dados gerados em: —</div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="rotulo">Usinas com fatura</div>
+        <div class="valor" id="card-total-usinas">—</div>
+      </div>
+      <div class="card">
+        <div class="rotulo">Energia Injetada HFP (total, mês mais recente de cada usina)</div>
+        <div class="valor" id="card-total-injetada">—</div>
+      </div>
+      <div class="card">
+        <div class="rotulo">Sobra/Excedente de Crédito (total)</div>
+        <div class="valor" id="card-total-sobra">—</div>
+      </div>
+    </div>
+
+    <div class="filtros">
+      <input type="text" id="filtro-busca" placeholder="Buscar usina/instalação...">
+      <select id="filtro-mes"><option value="">Todos os meses</option></select>
+    </div>
+
+    <div class="tabela-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Usina</th>
+            <th>Instalação</th>
+            <th>Mês Ref.</th>
+            <th class="num">Geração Real no Mês (kWh)</th>
+            <th class="num">Energia Injetada HFP (kWh)</th>
+            <th class="num">Diferença (kWh)</th>
+            <th class="num">Injeção Faturada (kWh)</th>
+            <th class="num">Saldo de Crédito (kWh)</th>
+            <th class="num">Sobra/Excedente (kWh)</th>
+            <th class="num">Valor da Conta</th>
+            <th class="num">Economia no Mês</th>
+          </tr>
+        </thead>
+        <tbody id="corpo-tabela"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+  // Login simples em JavaScript (sem back-end).
+  // Isto NÃO é segurança real — apenas evita acesso casual.
+  const USUARIOS_VALIDOS = {
+    "psenergia": "psenergia1234",
+    "fabricio":  "fabricio1234",
+    "ivan":      "ivan1234",
+    "julia":     "julia1234"
+  };
+
+  const CHAVE_SESSAO = "ps_energia_autenticado";
+
+  const telaLogin = document.getElementById("tela-login");
+  const painel = document.getElementById("painel");
+  const form = document.getElementById("form-login");
+  const erroEl = document.getElementById("erro-login");
+
+  function mostrarPainel(){
+    telaLogin.style.display = "none";
+    painel.style.display = "block";
+    renderizarTudo();
+  }
+
+  function mostrarLogin(){
+    telaLogin.style.display = "block";
+    painel.style.display = "none";
+  }
+
+  if (sessionStorage.getItem(CHAVE_SESSAO) === "1") {
+    mostrarPainel();
+  }
+
+  form.addEventListener("submit", function(e){
+    e.preventDefault();
+    const usuario = document.getElementById("usuario").value.trim().toLowerCase();
+    const senha = document.getElementById("senha").value;
+
+    if (USUARIOS_VALIDOS[usuario] && USUARIOS_VALIDOS[usuario] === senha) {
+      sessionStorage.setItem(CHAVE_SESSAO, "1");
+      erroEl.textContent = "";
+      mostrarPainel();
+    } else {
+      erroEl.textContent = "Usuário ou senha inválidos.";
+    }
+  });
+
+  document.getElementById("btn-sair").addEventListener("click", function(){
+    sessionStorage.removeItem(CHAVE_SESSAO);
+    document.getElementById("usuario").value = "";
+    document.getElementById("senha").value = "";
+    mostrarLogin();
+  });
+
+  // ---------- DADOS ----------
+  // Substituído pelo script Python na hora de gerar o arquivo final.
+  const DADOS = __DADOS_PS_ENERGIA_JSON__;
+
+  const fmtNum = (v) => (v === null || v === undefined) ? "—" :
+    Number(v).toLocaleString("pt-BR", {maximumFractionDigits: 1});
+  const fmtMoeda = (v) => (v === null || v === undefined) ? "—" :
+    Number(v).toLocaleString("pt-BR", {style: "currency", currency: "BRL"});
+
+  function popularFiltroMeses(){
+    const select = document.getElementById("filtro-mes");
+    const meses = [...new Set(DADOS.linhas.map(l => l.mesReferencia).filter(Boolean))].sort().reverse();
+    for (const m of meses){
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      select.appendChild(opt);
+    }
+  }
+
+  function linhasFiltradas(){
+    const busca = document.getElementById("filtro-busca").value.trim().toLowerCase();
+    const mes = document.getElementById("filtro-mes").value;
+    return DADOS.linhas.filter(l => {
+      if (mes && l.mesReferencia !== mes) return false;
+      if (busca){
+        const alvo = `${l.usina || ""} ${l.instalacao || ""}`.toLowerCase();
+        if (!alvo.includes(busca)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderizarCards(linhas){
+    document.getElementById("card-total-usinas").textContent = linhas.length;
+    const totalInjetada = linhas.reduce((s, l) => s + (Number(l.energiaInjetadaHfpKwh) || 0), 0);
+    const totalSobra = linhas.reduce((s, l) => s + (Number(l.sobraExcedenteKwh) || 0), 0);
+    document.getElementById("card-total-injetada").textContent = fmtNum(totalInjetada) + " kWh";
+    document.getElementById("card-total-sobra").textContent = fmtNum(totalSobra) + " kWh";
+  }
+
+  function renderizarTabela(linhas){
+    const corpo = document.getElementById("corpo-tabela");
+    corpo.innerHTML = "";
+    if (linhas.length === 0){
+      corpo.innerHTML = `<tr><td colspan="9" class="vazio">Nenhum registro encontrado.</td></tr>`;
+      return;
+    }
+    for (const l of linhas){
+      const tr = document.createElement("tr");
+      const temAmbos = l.geracaoMesKwh !== null && l.geracaoMesKwh !== undefined &&
+                        l.energiaInjetadaHfpKwh !== null && l.energiaInjetadaHfpKwh !== undefined;
+      const diferenca = temAmbos ? (Number(l.geracaoMesKwh) - Number(l.energiaInjetadaHfpKwh)) : null;
+      tr.innerHTML = `
+        <td>${l.usina ?? "—"}</td>
+        <td>${l.instalacao ?? "—"}</td>
+        <td>${l.mesReferencia ?? "—"}</td>
+        <td class="num">${fmtNum(l.geracaoMesKwh)}</td>
+        <td class="num">${fmtNum(l.energiaInjetadaHfpKwh)}</td>
+        <td class="num">${fmtNum(diferenca)}</td>
+        <td class="num">${fmtNum(l.energiaInjetadaFaturadaKwh)}</td>
+        <td class="num">${fmtNum(l.saldoCreditoKwh)}</td>
+        <td class="num">${fmtNum(l.sobraExcedenteKwh)}</td>
+        <td class="num">${fmtMoeda(l.valorConta)}</td>
+        <td class="num">${fmtMoeda(l.economiaMes)}</td>
+      `;
+      corpo.appendChild(tr);
+    }
+  }
+
+  function renderizarTudo(){
+    const geradoEm = DADOS.geradoEm ? new Date(DADOS.geradoEm).toLocaleString("pt-BR") : "—";
+    document.getElementById("resumo-geracao").textContent = `Dados gerados em: ${geradoEm}`;
+    popularFiltroMeses();
+    const linhas = linhasFiltradas();
+    renderizarCards(linhas);
+    renderizarTabela(linhas);
+  }
+
+  document.getElementById("filtro-busca").addEventListener("input", () => {
+    const linhas = linhasFiltradas();
+    renderizarCards(linhas);
+    renderizarTabela(linhas);
+  });
+  document.getElementById("filtro-mes").addEventListener("change", () => {
+    const linhas = linhasFiltradas();
+    renderizarCards(linhas);
+    renderizarTabela(linhas);
+  });
+</script>
+
+</body>
+</html>
