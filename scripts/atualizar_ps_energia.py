@@ -147,8 +147,25 @@ def buscar_geracao_sunweg(nomes_usinas, mes_por_usina):
         return {}
 
     print("Autenticando na SunWEG...")
-    api = APIHelper(username=SUNWEG_USERNAME, password=SUNWEG_PASSWORD)
-    if not api.authenticate():
+    try:
+        api = APIHelper(username=SUNWEG_USERNAME, password=SUNWEG_PASSWORD)
+        # Alguns servidores rejeitam (erro 500/403) requisições sem um
+        # User-Agent de navegador -- os runners do GitHub Actions caem nessa.
+        api.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://sunweg.net",
+            "Referer": "https://sunweg.net/",
+        })
+        autenticado = api.authenticate()
+    except Exception as e:
+        # IMPORTANTE: se a SunWEG estiver bloqueando/instável, isso NÃO pode
+        # derrubar a página inteira -- seguimos só com os dados do GDash.
+        print(f"  [erro] falha ao autenticar na SunWEG ({e}) -- seguindo sem dados de geração.")
+        return {}
+
+    if not autenticado:
         print("  [erro] falha ao autenticar na SunWEG -- verifique usuário/senha.")
         return {}
 
@@ -302,7 +319,13 @@ def main():
     usinas = buscar_usinas()
     faturas = buscar_faturas()
     mes_por_usina = extrair_mes_por_usina(usinas, faturas)
-    geracao_por_usina = buscar_geracao_sunweg(list(mes_por_usina.keys()), mes_por_usina)
+    try:
+        geracao_por_usina = buscar_geracao_sunweg(list(mes_por_usina.keys()), mes_por_usina)
+    except Exception as e:
+        # Rede de segurança: qualquer erro inesperado na SunWEG não pode
+        # impedir a publicação da página com os dados do GDash.
+        print(f"  [erro] falha geral ao buscar dados da SunWEG ({e}) -- seguindo sem geração.")
+        geracao_por_usina = {}
     linhas = montar_resumo(usinas, faturas, geracao_por_usina)
     print(f"Resumo montado: {len(linhas)} usinas com fatura recente.")
     gerar_html(linhas)
