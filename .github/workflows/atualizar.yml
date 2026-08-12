@@ -1,4 +1,4 @@
-name: Atualizar dashboards (Financeiro + PS Energia)
+name: Atualizar dashboard financeiro
 on:
   schedule:
     # Horários em UTC. Campos dos Goytacazes está em UTC-3.
@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar dependências
-        run: pip install requests sunweg
+        run: pip install requests
 
       - name: Atualizar Dashboard Financeiro (Omie)
         env:
@@ -36,16 +36,6 @@ jobs:
           OMIE_APP_KEY_PS_ENERGIA: ${{ secrets.OMIE_APP_KEY_PS_ENERGIA }}
           OMIE_APP_SECRET_PS_ENERGIA: ${{ secrets.OMIE_APP_SECRET_PS_ENERGIA }}
         run: python scripts/atualizar_dashboard.py
-
-      - name: Atualizar PS Energia (GDash + SunWEG)
-        env:
-          GDASH_API_KEY: ${{ secrets.GDASH_API_KEY }}
-          SUNWEG_USERNAME: ${{ secrets.SUNWEG_USERNAME }}
-          SUNWEG_PASSWORD: ${{ secrets.SUNWEG_PASSWORD }}
-        run: python scripts/atualizar_ps_energia.py
-
-      - name: Copiar tela de escolha (index.html)
-        run: cp scripts/index_menu.html public/index.html
 
       - name: Publicar artefato do Pages
         uses: actions/upload-pages-artifact@v3
