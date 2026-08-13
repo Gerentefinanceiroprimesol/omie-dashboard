@@ -1016,7 +1016,14 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
             f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do mês</th></tr></thead>"
             f"<tbody>{linhas_mes_top5}</tbody></table></div>"
         )
-    html_meses_vendedor = "".join(secoes_mensais)
+    # Envolve os blocos mensais num container flex, pra ficarem lado a lado
+    # numa linha só (em vez de empilhados verticalmente) -- some com a
+    # regra ".com-card-exp.aberto { grid-column: 1 / -1 }" no CSS abaixo,
+    # que dá largura total ao card quando ele é expandido. Se ainda assim
+    # não couberem todos os meses (ex: 7 meses de uma vez), a linha rola
+    # horizontalmente (overflow-x: auto) em vez de quebrar pra uma segunda
+    # fileira -- igual a tabela "Desempenho por Vendedor" logo abaixo.
+    html_meses_vendedor = "<div class='com-vendedor-meses'>" + "".join(secoes_mensais) + "</div>"
 
     def _media_pct_vendedor(vendedor):
         valores = [p for p in (_pct_vendedor_mes(vendedor, m) for m in meses) if p is not None]
@@ -1107,8 +1114,12 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     # alfabética, cabeçalho fixo (2 linhas), primeira coluna (nome) fixa
     # lateral, altura máxima com scroll vertical, e barra de rolagem
     # horizontal duplicada (topo + embaixo), sincronizadas ----
-    thead_meses = "".join(f"<th colspan=\'3\'>{m}</th>" for m in meses)
-    thead_sub = "<th>Vendedor</th>" + "<th>Total Vendas</th><th>% Fat.</th><th>Variação</th>" * len(meses)
+    # class='com-col-divisor' na primeira coluna de cada grupo de mês (Total
+    # Vendas) desenha uma linha vertical mais forte separando um mês do
+    # outro -- sem isso, os 3 x 6 = 18 números seguidos ficavam difíceis de
+    # ler, sem nenhuma pista visual de onde um mês termina e o outro começa.
+    thead_meses = "".join(f"<th colspan=\'3\' class=\'com-col-divisor\'>{m}</th>" for m in meses)
+    thead_sub = "<th>Vendedor</th>" + "<th class='com-col-divisor'>Total Vendas</th><th>% Fat.</th><th>Variação</th>" * len(meses)
 
     ranking_tabela = sorted(fat_vendedor_total.items(), key=lambda x: x[0].title())
     linhas_tabela = []
@@ -1120,7 +1131,7 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
             fat_mes = ag["fat_mes_total"].get(mes, 0)
             pct = (valor_mes / fat_mes * 100) if fat_mes else 0
             celulas.append(
-                f"<td>{_fmt_moeda_compacta(valor_mes)}</td><td>{pct:.1f}%</td><td>{_linha_delta(valor_mes, anterior)}</td>"
+                f"<td class='com-col-divisor'>{_fmt_moeda_compacta(valor_mes)}</td><td>{pct:.1f}%</td><td>{_linha_delta(valor_mes, anterior)}</td>"
             )
             anterior = valor_mes
         linhas_tabela.append(f"<tr><td>{vendedor.title()}</td>{''.join(celulas)}</tr>")
@@ -1129,7 +1140,7 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     anterior_total = None
     for mes in meses:
         total_mes = ag["fat_mes_total"].get(mes, 0)
-        linha_total.append(f"<td>{_fmt_moeda_compacta(total_mes)}</td><td>100.0%</td><td>{_linha_delta(total_mes, anterior_total)}</td>")
+        linha_total.append(f"<td class='com-col-divisor'>{_fmt_moeda_compacta(total_mes)}</td><td>100.0%</td><td>{_linha_delta(total_mes, anterior_total)}</td>")
         anterior_total = total_mes
     linha_total_html = "".join(linha_total)
     linhas_tabela.append(f"<tr class='com-total'><td>Total (todos vendedores)</td>{linha_total_html}</tr>")
@@ -1145,14 +1156,20 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
 
     css = """
   #abaComercial .com-wrap { padding: 20px 32px 40px; }
-  #abaComercial .com-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  #abaComercial .com-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; align-items: start; }
   #abaComercial .com-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
-  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s; position: relative; }
+  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s, grid-column .15s; position: relative; }
   #abaComercial .com-card-exp:hover { border-color: var(--laranja); }
   #abaComercial .com-card-exp::after {
     content: 'clique para detalhar ▾'; position: absolute; top: 12px; right: 14px;
     font-size: 9.5px; color: var(--text-faint); opacity: 1;
   }
+  /* Um card fechado é só um resumo (número + rótulo), então cabe estreito
+     na grade. Mas o conteúdo expandido (tabelas com várias colunas) não
+     cabe nessa mesma largura sem truncar -- por isso, ao abrir, o card
+     passa a ocupar a largura total da grade (empurrando os cards
+     seguintes pra linha de baixo), dando espaço de verdade pro conteúdo. */
+  #abaComercial .com-card-exp.aberto { grid-column: 1 / -1; }
   #abaComercial .com-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
   #abaComercial .com-value { font-size: 21px; font-weight: 800; }
   #abaComercial .com-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
@@ -1161,13 +1178,26 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-corpo { display: none; margin-top: 10px; }
   #abaComercial .com-card-exp.aberto .com-corpo { display: block; }
   #abaComercial .com-mini { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 8px; }
-  #abaComercial .com-mini th { text-align: right; color: var(--text-faint); font-weight: 600; padding: 4px; border-bottom: 1px solid var(--border); font-size: 10.5px; }
+  #abaComercial .com-mini th { text-align: right; color: var(--text-faint); font-weight: 600; padding: 4px; border-bottom: 1px solid var(--border); font-size: 10.5px; white-space: nowrap; }
   #abaComercial .com-mini th:first-child, #abaComercial .com-mini td:first-child { text-align: left; }
-  #abaComercial .com-mini td { text-align: right; padding: 5px; border-bottom: 1px solid var(--border); }
-  #abaComercial .com-mini tr:last-child td { border-bottom: none; font-weight: 700; }
+  #abaComercial .com-mini td { text-align: right; padding: 5px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  /* Só a linha com class="com-total" (Total/Média de verdade) fica em
+     negrito -- antes qualquer última linha de QUALQUER tabela .com-mini
+     ficava em negrito automaticamente, o que deixava o 5º colocado de
+     cada ranking top-5 (que não é total nenhum) destacado por engano. */
+  #abaComercial .com-total td { font-weight: 800; background: var(--bg-panel); border-bottom: none; }
   #abaComercial .com-mes-bloco { margin-top: 10px; }
   #abaComercial .com-mes-titulo { font-size: 10.5px; font-weight: 700; color: var(--laranja); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
   #abaComercial .com-mes-bloco-total { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 14px; }
+  /* Meses do card "Vendedor que mais faturou" lado a lado, numa linha só
+     -- em vez de quebrar linha quando não coubesse tudo (7 meses viravam 2
+     fileiras desalinhadas), a linha agora rola horizontalmente, igual a
+     tabela "Desempenho por Vendedor" logo abaixo. */
+  #abaComercial .com-vendedor-meses { display: flex; flex-wrap: nowrap; gap: 16px; margin-top: 4px; overflow-x: auto; padding-bottom: 6px; }
+  #abaComercial .com-vendedor-meses .com-mes-bloco { flex: 0 0 190px; min-width: 190px; margin-top: 0; }
+  #abaComercial .com-vendedor-meses::-webkit-scrollbar { height: 8px; }
+  #abaComercial .com-vendedor-meses::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  #abaComercial .com-vendedor-meses::-webkit-scrollbar-track { background: transparent; }
   #abaComercial .com-hero { grid-column: 1 / -1; background: rgba(250,168,33,0.08); border: 1px solid var(--laranja); }
   #abaComercial .com-hero-val { font-size: 30px; font-weight: 800; color: var(--laranja); }
   #abaComercial .com-tabela-titulo { font-size: 13px; color: var(--text-muted); margin: 4px 0 10px; }
@@ -1176,16 +1206,27 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-tabela-wrap { overflow-x: auto; overflow-y: auto; max-height: 65vh; border: 1px solid var(--border); border-radius: var(--radius); }
   #abaComercial .com-tabela { border-collapse: collapse; width: auto; min-width: 100%; font-size: 12px; white-space: nowrap; table-layout: auto; }
   #abaComercial .com-tabela th { background: var(--bg-panel); color: var(--text-muted); font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: .03em; padding: 8px 6px; border-bottom: 2px solid var(--laranja); text-align: right; position: sticky; z-index: 2; }
-  #abaComercial .com-tabela thead tr:first-child th { top: 0; }
+  /* Cabeçalho de mês (1ª linha, colspan=3) centralizado sobre o grupo de 3
+     colunas -- antes herdava text-align:right da regra acima e ficava
+     "colado" na borda direita do grupo, parecendo desalinhado com os
+     números embaixo. */
+  #abaComercial .com-tabela thead tr:first-child th { top: 0; text-align: center; }
   #abaComercial .com-tabela thead tr:nth-child(2) th { top: 29px; }
   #abaComercial .com-tabela th:first-child { text-align: left; position: sticky; left: 0; z-index: 3; background: var(--bg-panel); }
-  #abaComercial .com-tabela td { padding: 6px; border-bottom: 1px solid var(--border); text-align: right; }
+  #abaComercial .com-tabela td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; }
   #abaComercial .com-tabela td:first-child { text-align: left; font-weight: 700; position: sticky; left: 0; background: var(--bg); z-index: 1; }
+  /* Linha vertical separando a coluna fixa "Vendedor" do restante da
+     tabela (que rola horizontalmente) -- sem isso, ficava pouco claro
+     onde a coluna fixa terminava e os dados começavam a rolar. */
+  #abaComercial .com-tabela th:first-child, #abaComercial .com-tabela td:first-child { border-right: 2px solid var(--border); }
+  /* Linha vertical separando um mês do outro (3 colunas cada) -- sem
+     isso, os 18 números em sequência (6 meses x 3 colunas) ficavam
+     difíceis de agrupar visualmente por mês. */
+  #abaComercial .com-tabela th.com-col-divisor, #abaComercial .com-tabela td.com-col-divisor { border-left: 2px solid var(--border); }
   #abaComercial .com-tabela tr:hover td { background: var(--bg-card); }
   #abaComercial .com-delta-vazio { color: var(--text-faint); }
   #abaComercial .com-up { color: var(--green); }
   #abaComercial .com-down { color: var(--red); }
-  #abaComercial .com-total td { font-weight: 800; background: var(--bg-panel); border-bottom: none; }
 """
 
     script = """
@@ -1220,9 +1261,9 @@ function atualizarLarguraScrollComercial() {
     <div class="com-grid">
       {card_hero}
       {card_loja}
-      {card_vendedor}
       {card_modalidade}
       {card_ticket_medio}
+      {card_vendedor}
     </div>
     {tabela_desempenho}
   </div>
