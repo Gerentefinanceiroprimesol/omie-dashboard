@@ -823,6 +823,11 @@ def _agregar(dados_ellen: dict) -> dict:
     modalidade_vendedor = {}
     loja_vendedor = {}
     por_modalidade = defaultdict(lambda: {"faturamento": 0.0, "comissao": 0.0, "vendas": 0})
+    # Faturamento por modalidade (Interno/Externo) QUEBRADO POR MÊS -- usado
+    # pelo card "Interno x Externo" pra montar a tabela de % mês a mês (o
+    # mesmo padrão do card "Faturamento por Loja"), adicionado em 13/08/2026
+    # a pedido do Fabrício.
+    por_modalidade_mes = defaultdict(lambda: defaultdict(float))
     fat_mes_total = defaultdict(float)
     com_mes_total = defaultdict(float)
     fat_loja_total = defaultdict(float)
@@ -839,6 +844,7 @@ def _agregar(dados_ellen: dict) -> dict:
             if modalidade in ("INTERNO", "EXTERNO"):
                 por_modalidade[modalidade]["faturamento"] += valor
                 por_modalidade[modalidade]["vendas"] += 1
+                por_modalidade_mes[modalidade][mes] += valor
         if comissao is not None:
             com_mes_total[mes] += comissao
             com_loja_total[loja] += comissao
@@ -852,7 +858,8 @@ def _agregar(dados_ellen: dict) -> dict:
     return dict(
         por_loja_mes=por_loja_mes, por_vendedor_mes=por_vendedor_mes,
         modalidade_vendedor=modalidade_vendedor, loja_vendedor=loja_vendedor,
-        por_modalidade=por_modalidade, fat_mes_total=fat_mes_total,
+        por_modalidade=por_modalidade, por_modalidade_mes=por_modalidade_mes,
+        fat_mes_total=fat_mes_total,
         com_mes_total=com_mes_total, fat_loja_total=fat_loja_total,
         com_loja_total=com_loja_total,
     )
@@ -1059,11 +1066,16 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
         f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do período</th><th>Média % mensal</th></tr></thead>"
         f"<tbody>{linhas_total_top5}</tbody></table></div>"
     )
-    # com-card-full: único card que precisa expandir pra largura total ao
-    # abrir (a tabela tem muitas colunas -- 7 meses x 3 cada). Os outros
-    # cards da aba só crescem pra baixo (ver regra .com-card-exp.aberto no
-    # CSS) -- combinado com Fabrício em 13/08/2026, que achou o antigo
-    # comportamento (todo card virando tela cheia) exagerado.
+    # com-card-full: único card que ocupa a largura total da grade (as 3
+    # colunas dos cards de cima) O TEMPO TODO -- fechado e aberto, sem
+    # diferença de largura entre os dois estados (só a altura muda, quando
+    # abre). Faz sentido pra esse card porque a tabela por trás tem muitas
+    # colunas (7 meses x 3 cada). Os outros cards da aba (Faturamento por
+    # Loja, Interno x Externo, Ticket Médio) já ocupam 1 das 3 colunas fixas
+    # da grade o tempo todo também -- nenhum card muda de largura ao
+    # abrir/fechar, só de altura (ver CSS .com-grid/.com-card-full,
+    # ajustado em 13/08/2026 a pedido do Fabrício pra não ter esse "salto"
+    # de largura visualmente estranho).
     card_vendedor = (
         "<div class='com-card com-card-exp com-card-full' onclick='comToggle(this)'>"
         "<div class='com-card-head'><span class='com-label'>Ranking de Vendedores</span>"
@@ -1073,22 +1085,58 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
         f"<div class='com-corpo'>{html_meses_vendedor}{bloco_total_vendedor}</div></div>"
     )
 
-    # ---- Card: interno x externo ----
+    # ---- Card: interno x externo -- resumo do período no card fechado; ao
+    # expandir, primeiro uma tabela com o % que cada modalidade representou
+    # em cada mês + linha de Média (mesmo padrão da "Faturamento por Loja",
+    # a pedido do Fabrício em 13/08/2026), seguida da tabela de totais do
+    # período (faturamento/comissão/vendas) que já existia antes ----
     fat_int = ag["por_modalidade"]["INTERNO"]["faturamento"]
     fat_ext = ag["por_modalidade"]["EXTERNO"]["faturamento"]
     total_modal = fat_int + fat_ext
     pct_int = (fat_int / total_modal * 100) if total_modal else 0
     pct_ext = 100 - pct_int
+
+    def _fat_modalidade_mes(modalidade, mes):
+        return ag["por_modalidade_mes"].get(modalidade, {}).get(mes, 0)
+
+    def _pct_modalidade_mes(modalidade, mes):
+        total_mes = ag["fat_mes_total"].get(mes, 0)
+        if not total_mes:
+            return None
+        return _fat_modalidade_mes(modalidade, mes) / total_mes * 100
+
+    linhas_pct_modalidade_partes = []
+    for m in meses:
+        pct_int_mes = _pct_modalidade_mes("INTERNO", m)
+        pct_ext_mes = _pct_modalidade_mes("EXTERNO", m)
+        txt_int_mes = f"{pct_int_mes:.1f}%" if pct_int_mes is not None else "—"
+        txt_ext_mes = f"{pct_ext_mes:.1f}%" if pct_ext_mes is not None else "—"
+        linhas_pct_modalidade_partes.append(f"<tr><td>{m}</td><td>{txt_int_mes}</td><td>{txt_ext_mes}</td></tr>")
+    linhas_pct_modalidade = "".join(linhas_pct_modalidade_partes)
+
+    medias_pct_modalidade = {}
+    for modalidade in ("INTERNO", "EXTERNO"):
+        valores = [_pct_modalidade_mes(modalidade, m) for m in meses if _pct_modalidade_mes(modalidade, m) is not None]
+        medias_pct_modalidade[modalidade] = sum(valores) / len(valores) if valores else None
+    txt_media_int = f"{medias_pct_modalidade['INTERNO']:.1f}%" if medias_pct_modalidade["INTERNO"] is not None else "—"
+    txt_media_ext = f"{medias_pct_modalidade['EXTERNO']:.1f}%" if medias_pct_modalidade["EXTERNO"] is not None else "—"
+    linha_media_pct_modalidade = f"<tr class='com-total'><td>Média</td><td>{txt_media_int}</td><td>{txt_media_ext}</td></tr>"
+
     card_modalidade = (
         "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
         "<div class='com-card-head'><span class='com-label'>Interno x Externo</span>"
         "<span class='com-hint'>detalhar <span class='com-seta'>&#9662;</span></span></div>"
         f"<div class='com-value'>{pct_int:.0f}% / {pct_ext:.0f}%</div>"
-        f"<div class='com-sub'>faturamento interno vs externo</div>"
-        f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Modalidade</th><th>Faturamento</th><th>Comissão</th><th>Vendas</th></tr></thead><tbody>"
+        f"<div class='com-sub'>faturamento interno vs externo &middot; clique pra ver % mês a mês</div>"
+        "<div class='com-corpo'>"
+        "<table class='com-mini'><thead><tr><th>Mês</th><th>Interno</th><th>Externo</th></tr></thead>"
+        f"<tbody>{linhas_pct_modalidade}{linha_media_pct_modalidade}</tbody></table>"
+        f"<div class='com-mes-bloco com-mes-bloco-total'><div class='com-mes-titulo'>Total ({meses[0]}-{meses[-1]}/26)</div>"
+        "<table class='com-mini'><thead><tr><th>Modalidade</th><th>Faturamento</th><th>Comissão</th><th>Vendas</th></tr></thead><tbody>"
         f"<tr><td>Interno</td><td>{_fmt_moeda_compacta(fat_int)}</td><td>{_fmt_moeda_compacta(ag['por_modalidade']['INTERNO']['comissao'])}</td><td>{ag['por_modalidade']['INTERNO']['vendas']}</td></tr>"
         f"<tr><td>Externo</td><td>{_fmt_moeda_compacta(fat_ext)}</td><td>{_fmt_moeda_compacta(ag['por_modalidade']['EXTERNO']['comissao'])}</td><td>{ag['por_modalidade']['EXTERNO']['vendas']}</td></tr>"
-        f"</tbody></table></div></div>"
+        "</tbody></table></div>"
+        "</div></div>"
     )
 
     # ---- Card: Ticket Médio -- geral no card fechado; ao expandir, tabela
@@ -1183,16 +1231,41 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
 
     css = """
   #abaComercial .com-wrap { padding: 20px 32px 40px; }
-  #abaComercial .com-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; align-items: start; }
+  /* Grade com 3 colunas FIXAS (não mais auto-fit) -- os únicos 3 cards
+     "normais" da aba (Faturamento por Loja, Interno x Externo, Ticket
+     Médio) ficam lado a lado, cada um ocupando 1 coluna, e o card "Ranking
+     de Vendedores" (com-card-full, abaixo) ocupa as 3 colunas de uma vez
+     -- ver comentário dele no CSS mais abaixo. Trocado de auto-fit pra um
+     número fixo de colunas em 13/08/2026 a pedido do Fabrício: com
+     auto-fit, a largura de cada card dependia de quantos cabiam na tela
+     (podendo ser 4, 5 ou 6 colunas), o que fazia a largura do card
+     "fechado" (1 coluna) ficar sempre menor que a largura que ele
+     precisava quando "aberto" (que antes ganhava +1 coluna via
+     grid-column:span 2) -- um salto de largura ao clicar, feio
+     visualmente. Com 3 colunas fixas e SEM span condicional no aberto, a
+     largura do card é sempre a mesma, fechado ou aberto -- só a altura
+     muda (ver regra .com-card-exp.aberto .com-corpo mais abaixo). Em
+     telas estreitas (ver media query no fim do CSS), cai pra 1 coluna. */
+  #abaComercial .com-grid { display: grid; grid-template-columns: repeat(3, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; align-items: start; }
   #abaComercial .com-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
-  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s, grid-column .15s; position: relative; }
+  #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s; position: relative; }
   /* Altura mínima igual pros cards fechados -- a largura já é igual (a
-     grade distribui certinho), mas a altura variava porque a legenda
-     (com-sub) de alguns cards cabe numa linha só e de outros quebra em
-     duas (ex: "Interno x Externo" vs "Faturamento por Loja"), deixando a
-     fileira com fundo de card desalinhado. Não afeta o card aberto (que
-     já cresce além disso naturalmente com o conteúdo detalhado). */
+     grade agora tem 3 colunas fixas), mas a altura variava porque a
+     legenda (com-sub) de alguns cards cabe numa linha só e de outros
+     quebra em duas (ex: "Interno x Externo" vs "Faturamento por Loja"),
+     deixando a fileira com fundo de card desalinhado. Não afeta o card
+     aberto (que já cresce além disso naturalmente com o conteúdo
+     detalhado). */
   #abaComercial .com-card-exp:not(.com-hero) { min-height: 104px; }
+  /* Reserva sempre o espaço de 2 linhas pro texto da legenda (com-sub),
+     mesmo quando o texto real cabe numa linha só -- é o que realmente
+     garante altura igual entre os cards fechados de uma fileira (o
+     min-height acima sozinho não bastava: um card cuja legenda quebra em
+     2 linhas ficava mais alto que o min-height e, portanto, mais alto que
+     os vizinhos cuja legenda cabe numa linha só e param exatamente no
+     min-height). Não se aplica ao card hero, cuja legenda é sempre curta
+     e cujo layout já é outro (valor bem maior). Ajustado em 13/08/2026. */
+  #abaComercial .com-card:not(.com-hero) > .com-sub { min-height: 2.6em; line-height: 1.3; }
   #abaComercial .com-card-exp:hover { border-color: var(--laranja); }
   /* Cabeçalho do card em flex (rótulo à esquerda, dica "detalhar" à
      direita) -- antes a dica era um ::after com position:absolute no
@@ -1202,20 +1275,20 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
      sobrepõem: a dica fica fixa à direita e o rótulo quebra linha se
      precisar, em vez de passar por baixo dela. */
   #abaComercial .com-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-  /* Por padrão, ao abrir, o card só cresce PRA BAIXO (a tabela dentro dele
-     tem largura própria via .com-mini/.com-tabela-scroll, não precisa que
-     o card inteiro estique) -- ocupar a linha inteira da grade pra uma
-     tabela de 3-4 colunas ficava exagerado e vazio (a "Faturamento por
-     Loja" e a "Ticket Médio" tomavam a tela toda pra mostrar 3 colunas de
-     %). Só o card "Vendedor que mais faturou" (com muito mais colunas --
-     6-7 meses x 3 cada) realmente precisa da largura total pra não
-     truncar; ele leva a classe extra "com-card-full" abaixo, que é a
-     única que aciona esse comportamento. */
-  #abaComercial .com-card-exp.com-card-full.aberto { grid-column: 1 / -1; }
-  /* Os demais cards expandidos ocupam 2 colunas da grade em vez de 1 --
-     dobra a largura (dá espaço suficiente pra tabela de 4-5 colunas não
-     truncar) sem tomar a linha inteira nem sobrar vazio do lado. */
-  #abaComercial .com-card-exp.aberto:not(.com-card-full):not(.com-hero) { grid-column: span 2; }
+  /* O card só cresce PRA BAIXO ao abrir (a tabela dentro dele tem largura
+     própria via .com-mini/.com-tabela-scroll, com rolagem horizontal
+     própria se precisar) -- nenhum card muda de LARGURA entre fechado e
+     aberto (ver comentário na .com-grid acima). */
+  /* "Ranking de Vendedores" é o único card que ocupa as 3 colunas da
+     grade O TEMPO TODO, fechado ou aberto -- fica com a mesma largura da
+     fileira de 3 cards acima dele (não é largura de tela toda como o
+     card hero, que também é 1/-1 mas tem fundo/borda laranja destacados;
+     esse aqui mantém o visual de card normal, só mais largo). Faz sentido
+     porque a tabela por trás tem muitas colunas (7 meses x 3 cada) e
+     precisa do espaço. Ajustado em 13/08/2026 -- antes só ficava largo ao
+     abrir (".com-card-full.aberto"), o que também causava o salto de
+     largura que tiramos dos outros cards. */
+  #abaComercial .com-card-exp.com-card-full { grid-column: 1 / -1; }
   #abaComercial .com-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
   #abaComercial .com-hint { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; flex-shrink: 0; }
   #abaComercial .com-value { font-size: 21px; font-weight: 800; }
@@ -1274,6 +1347,12 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-delta-vazio { color: var(--text-faint); }
   #abaComercial .com-up { color: var(--green); }
   #abaComercial .com-down { color: var(--red); }
+  /* Fallback pra telas estreitas -- a grade agora usa 3 colunas fixas (não
+     mais auto-fit), então sem isso os cards ficariam espremidos abaixo de
+     ~720px de largura em vez de empilhar como antes. */
+  @media (max-width: 720px) {
+    #abaComercial .com-grid { grid-template-columns: 1fr; }
+  }
 """
 
     script = """
