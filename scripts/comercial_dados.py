@@ -923,7 +923,8 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     )
     card_hero = (
         "<div class=\'com-card com-hero com-card-exp\' onclick=\'comToggle(this)\'>"
-        f"<div class=\'com-label\'>Comissão comercial total ({meses[0]}-{meses[-1]}/26) <span class=\'com-seta\'>&#9662;</span></div>"
+        f"<div class=\'com-card-head\'><span class=\'com-label\'>Comissão comercial total ({meses[0]}-{meses[-1]}/26)</span>"
+        "<span class=\'com-hint\'>detalhar <span class=\'com-seta\'>&#9662;</span></span></div>"
         f"<div class=\'com-hero-val\'>{_fmt_moeda(com_total)}</div>"
         f"<div class=\'com-sub\'>sobre {_fmt_moeda(fat_total)} de faturamento &middot; clique pra ver por mês</div>"
         f"<div class=\'com-corpo\'><table class=\'com-mini\'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>Faturamento Total</th><th>Comissão</th></tr></thead>"
@@ -966,7 +967,8 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     )
     card_loja = (
         "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
-        f"<div class='com-label'>Faturamento por loja <span class='com-seta'>&#9662;</span></div>"
+        "<div class='com-card-head'><span class='com-label'>Faturamento por Loja</span>"
+        "<span class='com-hint'>detalhar <span class='com-seta'>&#9662;</span></span></div>"
         f"<div class='com-value'>{loja_top}</div>"
         f"<div class='com-sub'>{pct_top:.0f}% do faturamento total ({meses[0]}-{meses[-1]}/26) &middot; clique pra ver % mês a mês</div>"
         f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th></tr></thead>"
@@ -999,31 +1001,48 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
             return None
         return valor / total_mes * 100
 
-    secoes_mensais = []
+    # Ranking mensal (top 5) de cada mês, guardado num dict pra montar a
+    # tabela única abaixo -- antes cada mês virava um mini-tabela solta
+    # lado a lado (7 tabelinhas separadas); combinado com Fabrício em
+    # 13/08/2026 pra juntar tudo numa tabela só, no mesmo estilo (mês
+    # centralizado + divisória) da tabela "Desempenho por Vendedor" logo
+    # abaixo na página, pra ficar visualmente mais harmonioso.
+    rankings_mensais = {}
     for mes in meses:
         ranking_mes = sorted(
             ((v, ag["por_vendedor_mes"].get(v, {}).get(mes, 0)) for v in ag["por_vendedor_mes"]),
             key=lambda x: -x[1],
         )
-        ranking_mes = [(v, val) for v, val in ranking_mes if val > 0][:5]
-        total_mes = ag["fat_mes_total"].get(mes, 0)
-        linhas_mes_top5 = "".join(
-            f"<tr><td>{v.title()}</td><td>{_fmt_moeda_compacta(val)}</td><td>{(val / total_mes * 100 if total_mes else 0):.1f}%</td></tr>"
-            for v, val in ranking_mes
-        )
-        secoes_mensais.append(
-            f"<div class='com-mes-bloco'><div class='com-mes-titulo'>{mes}</div>"
-            f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do mês</th></tr></thead>"
-            f"<tbody>{linhas_mes_top5}</tbody></table></div>"
-        )
-    # Envolve os blocos mensais num container flex, pra ficarem lado a lado
-    # numa linha só (em vez de empilhados verticalmente) -- some com a
-    # regra ".com-card-exp.aberto { grid-column: 1 / -1 }" no CSS abaixo,
-    # que dá largura total ao card quando ele é expandido. Se ainda assim
-    # não couberem todos os meses (ex: 7 meses de uma vez), a linha rola
-    # horizontalmente (overflow-x: auto) em vez de quebrar pra uma segunda
-    # fileira -- igual a tabela "Desempenho por Vendedor" logo abaixo.
-    html_meses_vendedor = "<div class='com-vendedor-meses'>" + "".join(secoes_mensais) + "</div>"
+        rankings_mensais[mes] = [(v, val) for v, val in ranking_mes if val > 0][:5]
+
+    # Linhas = posição no ranking (1º a 5º); colunas = mês (Vendedor,
+    # Faturamento, % do mês) -- célula "—" quando aquele mês não teve 5
+    # vendedores com venda.
+    thead_meses_rank = "".join(f"<th colspan='3' class='com-col-divisor'>{m}</th>" for m in meses)
+    thead_sub_rank = "<th>#</th>" + "<th class='com-col-divisor'>Vendedor</th><th>Faturamento</th><th>% do mês</th>" * len(meses)
+
+    linhas_ranking = []
+    for pos in range(5):
+        celulas = []
+        for mes in meses:
+            total_mes = ag["fat_mes_total"].get(mes, 0)
+            ranking_mes = rankings_mensais[mes]
+            if pos < len(ranking_mes):
+                v, val = ranking_mes[pos]
+                pct = (val / total_mes * 100) if total_mes else 0
+                celulas.append(
+                    f"<td class='com-col-divisor'>{v.title()}</td><td>{_fmt_moeda_compacta(val)}</td><td>{pct:.1f}%</td>"
+                )
+            else:
+                celulas.append("<td class='com-col-divisor'>—</td><td>—</td><td>—</td>")
+        linhas_ranking.append(f"<tr><td>{pos + 1}&ordm;</td>{''.join(celulas)}</tr>")
+    linhas_ranking_html = "".join(linhas_ranking)
+
+    html_meses_vendedor = (
+        "<div class='com-tabela-scroll'><table class='com-tabela'>"
+        f"<thead><tr><th></th>{thead_meses_rank}</tr><tr>{thead_sub_rank}</tr></thead>"
+        f"<tbody>{linhas_ranking_html}</tbody></table></div>"
+    )
 
     def _media_pct_vendedor(vendedor):
         valores = [p for p in (_pct_vendedor_mes(vendedor, m) for m in meses) if p is not None]
@@ -1040,9 +1059,15 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
         f"<table class='com-mini'><thead><tr><th>Vendedor</th><th>Faturamento</th><th>% do período</th><th>Média % mensal</th></tr></thead>"
         f"<tbody>{linhas_total_top5}</tbody></table></div>"
     )
+    # com-card-full: único card que precisa expandir pra largura total ao
+    # abrir (a tabela tem muitas colunas -- 7 meses x 3 cada). Os outros
+    # cards da aba só crescem pra baixo (ver regra .com-card-exp.aberto no
+    # CSS) -- combinado com Fabrício em 13/08/2026, que achou o antigo
+    # comportamento (todo card virando tela cheia) exagerado.
     card_vendedor = (
-        "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
-        f"<div class='com-label'>Vendedor que mais faturou <span class='com-seta'>&#9662;</span></div>"
+        "<div class='com-card com-card-exp com-card-full' onclick='comToggle(this)'>"
+        "<div class='com-card-head'><span class='com-label'>Ranking de Vendedores</span>"
+        "<span class='com-hint'>detalhar <span class='com-seta'>&#9662;</span></span></div>"
         f"<div class='com-value' style='color:var(--laranja)'>{vend_top.title()}</div>"
         f"<div class='com-sub'>{_fmt_moeda_compacta(vend_top_val)} &middot; {n_vendas_vendedor.get(vend_top, 0)} vendas &middot; {ag['modalidade_vendedor'].get(vend_top, '-').title()}</div>"
         f"<div class='com-corpo'>{html_meses_vendedor}{bloco_total_vendedor}</div></div>"
@@ -1056,7 +1081,8 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     pct_ext = 100 - pct_int
     card_modalidade = (
         "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
-        f"<div class='com-label'>Interno x Externo <span class='com-seta'>&#9662;</span></div>"
+        "<div class='com-card-head'><span class='com-label'>Interno x Externo</span>"
+        "<span class='com-hint'>detalhar <span class='com-seta'>&#9662;</span></span></div>"
         f"<div class='com-value'>{pct_int:.0f}% / {pct_ext:.0f}%</div>"
         f"<div class='com-sub'>faturamento interno vs externo</div>"
         f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Modalidade</th><th>Faturamento</th><th>Comissão</th><th>Vendas</th></tr></thead><tbody>"
@@ -1103,7 +1129,8 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
     )
     card_ticket_medio = (
         "<div class='com-card com-card-exp' onclick='comToggle(this)'>"
-        f"<div class='com-label'>Ticket Médio <span class='com-seta'>&#9662;</span></div>"
+        "<div class='com-card-head'><span class='com-label'>Ticket Médio</span>"
+        "<span class='com-hint'>detalhar <span class='com-seta'>&#9662;</span></span></div>"
         f"<div class='com-value'>{(_fmt_moeda(ticket_medio_geral) if ticket_medio_geral is not None else '—')}</div>"
         f"<div class='com-sub'>média geral ({meses[0]}-{meses[-1]}/26) &middot; clique pra ver por loja e mês</div>"
         f"<div class='com-corpo'><table class='com-mini'><thead><tr><th>Mês</th><th>Prime Sol Matriz</th><th>Prime Sol Lagos</th><th>Prime Sol Cabo Frio</th><th>Total</th></tr></thead>"
@@ -1159,18 +1186,38 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; align-items: start; }
   #abaComercial .com-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
   #abaComercial .com-card-exp { cursor: pointer; transition: border-color .15s, grid-column .15s; position: relative; }
+  /* Altura mínima igual pros cards fechados -- a largura já é igual (a
+     grade distribui certinho), mas a altura variava porque a legenda
+     (com-sub) de alguns cards cabe numa linha só e de outros quebra em
+     duas (ex: "Interno x Externo" vs "Faturamento por Loja"), deixando a
+     fileira com fundo de card desalinhado. Não afeta o card aberto (que
+     já cresce além disso naturalmente com o conteúdo detalhado). */
+  #abaComercial .com-card-exp:not(.com-hero) { min-height: 104px; }
   #abaComercial .com-card-exp:hover { border-color: var(--laranja); }
-  #abaComercial .com-card-exp::after {
-    content: 'clique para detalhar ▾'; position: absolute; top: 12px; right: 14px;
-    font-size: 9.5px; color: var(--text-faint); opacity: 1;
-  }
-  /* Um card fechado é só um resumo (número + rótulo), então cabe estreito
-     na grade. Mas o conteúdo expandido (tabelas com várias colunas) não
-     cabe nessa mesma largura sem truncar -- por isso, ao abrir, o card
-     passa a ocupar a largura total da grade (empurrando os cards
-     seguintes pra linha de baixo), dando espaço de verdade pro conteúdo. */
-  #abaComercial .com-card-exp.aberto { grid-column: 1 / -1; }
-  #abaComercial .com-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
+  /* Cabeçalho do card em flex (rótulo à esquerda, dica "detalhar" à
+     direita) -- antes a dica era um ::after com position:absolute no
+     canto do card, que ficava por CIMA do rótulo sempre que o texto do
+     rótulo era comprido (ex: "Vendedor que mais faturou" num card
+     estreito), colando as duas frases. Em flex, os dois nunca se
+     sobrepõem: a dica fica fixa à direita e o rótulo quebra linha se
+     precisar, em vez de passar por baixo dela. */
+  #abaComercial .com-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  /* Por padrão, ao abrir, o card só cresce PRA BAIXO (a tabela dentro dele
+     tem largura própria via .com-mini/.com-tabela-scroll, não precisa que
+     o card inteiro estique) -- ocupar a linha inteira da grade pra uma
+     tabela de 3-4 colunas ficava exagerado e vazio (a "Faturamento por
+     Loja" e a "Ticket Médio" tomavam a tela toda pra mostrar 3 colunas de
+     %). Só o card "Vendedor que mais faturou" (com muito mais colunas --
+     6-7 meses x 3 cada) realmente precisa da largura total pra não
+     truncar; ele leva a classe extra "com-card-full" abaixo, que é a
+     única que aciona esse comportamento. */
+  #abaComercial .com-card-exp.com-card-full.aberto { grid-column: 1 / -1; }
+  /* Os demais cards expandidos ocupam 2 colunas da grade em vez de 1 --
+     dobra a largura (dá espaço suficiente pra tabela de 4-5 colunas não
+     truncar) sem tomar a linha inteira nem sobrar vazio do lado. */
+  #abaComercial .com-card-exp.aberto:not(.com-card-full):not(.com-hero) { grid-column: span 2; }
+  #abaComercial .com-label { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; }
+  #abaComercial .com-hint { font-size: 9.5px; color: var(--text-faint); white-space: nowrap; flex-shrink: 0; }
   #abaComercial .com-value { font-size: 21px; font-weight: 800; }
   #abaComercial .com-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
   #abaComercial .com-seta { display: inline-block; font-size: 9px; transition: transform .2s; color: var(--text-faint); }
@@ -1189,15 +1236,15 @@ def gerar_html_aba_comercial(dados_ellen: dict) -> str:
   #abaComercial .com-mes-bloco { margin-top: 10px; }
   #abaComercial .com-mes-titulo { font-size: 10.5px; font-weight: 700; color: var(--laranja); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 4px; }
   #abaComercial .com-mes-bloco-total { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 14px; }
-  /* Meses do card "Vendedor que mais faturou" lado a lado, numa linha só
-     -- em vez de quebrar linha quando não coubesse tudo (7 meses viravam 2
-     fileiras desalinhadas), a linha agora rola horizontalmente, igual a
-     tabela "Desempenho por Vendedor" logo abaixo. */
-  #abaComercial .com-vendedor-meses { display: flex; flex-wrap: nowrap; gap: 16px; margin-top: 4px; overflow-x: auto; padding-bottom: 6px; }
-  #abaComercial .com-vendedor-meses .com-mes-bloco { flex: 0 0 190px; min-width: 190px; margin-top: 0; }
-  #abaComercial .com-vendedor-meses::-webkit-scrollbar { height: 8px; }
-  #abaComercial .com-vendedor-meses::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-  #abaComercial .com-vendedor-meses::-webkit-scrollbar-track { background: transparent; }
+  /* Wrapper de rolagem horizontal da tabela única de "Ranking de
+     Vendedores" (reaproveita a classe .com-tabela, mesmo estilo de
+     cabeçalho centralizado + divisórias por mês da tabela "Desempenho por
+     Vendedor" mais abaixo -- combinado com Fabrício em 13/08/2026 pra
+     ficar visualmente harmonioso, uma tabela só em vez de 7 soltas). */
+  #abaComercial .com-tabela-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-top: 4px; }
+  #abaComercial .com-tabela-scroll::-webkit-scrollbar { height: 8px; }
+  #abaComercial .com-tabela-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  #abaComercial .com-tabela-scroll::-webkit-scrollbar-track { background: transparent; }
   #abaComercial .com-hero { grid-column: 1 / -1; background: rgba(250,168,33,0.08); border: 1px solid var(--laranja); }
   #abaComercial .com-hero-val { font-size: 30px; font-weight: 800; color: var(--laranja); }
   #abaComercial .com-tabela-titulo { font-size: 13px; color: var(--text-muted); margin: 4px 0 10px; }
