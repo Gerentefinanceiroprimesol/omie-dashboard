@@ -1822,6 +1822,86 @@ def montar_lookup_titulos(contas: list, app_key: str, app_secret: str) -> dict:
     return lookup_geral
 
 
+def buscar_titulos_pagar_receber_cartao(app_key: str, app_secret: str) -> dict:
+    """Busca TODOS os títulos de Contas a Pagar e Contas a Receber de uma
+    empresa (via financas/contapagar e financas/contareceber, paginando até
+    o fim), para servir de fonte de departamento pros lançamentos de
+    CARTÃO -- que não têm departamento via ListarMovimentos (financas/mf,
+    usado por buscar_movimentos_financeiros), porque esse endpoint sempre
+    retorna erro 500 pra conta tipo cartão (ver coletar_dados()).
+
+    Esse outro módulo NÃO depende do tipo de conta corrente -- é o mesmo
+    módulo que gera a tela "Contas a Pagar"/"Contas a Receber" do Omie.
+    Confirmado em 13/08/2026 testando ao vivo o título da Prudential
+    (pago no Cartão Sicoob Matriz): o campo "distribuicao" da resposta de
+    ListarContasPagar bate exatamente com a aba Departamentos que aparece
+    na tela do título (cDesDep = nome do departamento, nPerDep = % do
+    rateio).
+
+    Retorna {codigo_lancamento_omie: {"departamento": ..., "departamentosRateio": [...], "status": ...}}.
+    Essa chave é cruzada, em coletar_dados(), com o nCodLancamento do
+    extrato de cartão -- mesmo padrão de ponte que a busca de bancos já
+    usa entre nCodMovCC/nCodTitulo e nCodLancamento (ver
+    buscar_movimentos_financeiros). Essa ponte específica para cartão
+    ainda não foi 100% confirmada lançamento a lançamento -- mas o pior
+    cenário, se ela não bater para algum caso, é o lançamento continuar
+    "-" como já era antes desta função existir (sem regressão possível).
+    """
+    lookup = {}
+    fontes = (
+        ("financas/contapagar", "ListarContasPagar", "conta_pagar_cadastro"),
+        ("financas/contareceber", "ListarContasReceber", "conta_receber_cadastro"),
+    )
+    for modulo, call_listar, chave_resposta in fontes:
+        pagina = 1
+        while True:
+            try:
+                data = chamar_omie(
+                    modulo,
+                    call_listar,
+                    {"pagina": pagina, "registros_por_pagina": 200, "apenas_importado_api": "N"},
+                    app_key,
+                    app_secret,
+                )
+            except Exception as erro:
+                print(f"AVISO: falha ao buscar {call_listar} pra departamento de cartão (página {pagina}): {erro}")
+                break
+
+            titulos = data.get(chave_resposta, []) or []
+            for t in titulos:
+                cod = t.get("codigo_lancamento_omie")
+                distribuicao = t.get("distribuicao") or []
+                if not cod or not distribuicao:
+                    # Sem código pra cruzar ou sem rateio cadastrado nesse
+                    # título -- não dá pra usar, o lançamento continua "-"
+                    # como já era.
+                    continue
+
+                if len(distribuicao) == 1:
+                    desc_depto = distribuicao[0].get("cDesDep") or "-"
+                else:
+                    desc_depto = "; ".join(
+                        f"{d.get('cDesDep') or '-'} ({d.get('nPerDep', 0):.0f}%)"
+                        for d in distribuicao
+                    )
+                lista_depto = [
+                    {"nome": d.get("cDesDep") or "-", "percentual": d.get("nPerDep", 0)}
+                    for d in distribuicao
+                ]
+
+                lookup[cod] = {
+                    "departamento": desc_depto,
+                    "departamentosRateio": lista_depto,
+                    "status": (t.get("status_titulo") or "").strip(),
+                }
+
+            total_paginas = data.get("total_de_paginas", 1)
+            if pagina >= total_paginas or not titulos:
+                break
+            pagina += 1
+    return lookup
+
+
 def coletar_dados() -> list:
     """Coleta os dados brutos de todas as EMPRESAS e suas contas, sem
     aplicar nenhum filtro. Cada conta resultante carrega também o nome
@@ -1841,7 +1921,25 @@ def coletar_dados() -> list:
         # nesses dois campos), economizando um tempo enorme de tentativas
         # que sempre falhariam mesmo.
         contas_bancarias = [c for c in contas if c["tipo"] == "banco"]
+        contas_cartao = [c for c in contas if c["tipo"] == "cartao"]
         lookup_titulos = montar_lookup_titulos(contas_bancarias, empresa["app_key"], empresa["app_secret"])
+
+        # Cartão não tem departamento/status via ListarMovimentos (erro 500
+        # -- comentário acima), mas TEM via Contas a Pagar/Receber, que não
+        # depende do tipo de conta corrente (ver buscar_titulos_pagar_receber_cartao).
+        # Só busca isso se a empresa tiver conta de cartão configurada, pra
+        # não gastar chamadas à toa nas empresas que só têm banco (ex: Prime
+        # Sol Cabo Frio, PS Energia). Roda pra QUALQUER empresa com cartão --
+        # inclui automaticamente Prime Sol Lagos, sem precisar de código
+        # separado por empresa.
+        if contas_cartao:
+            lookup_titulos_cartao = buscar_titulos_pagar_receber_cartao(empresa["app_key"], empresa["app_secret"])
+            # setdefault: nunca sobrescreve uma chave que já veio do lookup
+            # de bancos -- não deveria colidir (são universos de títulos
+            # diferentes), mas por segurança preferimos manter o dado
+            # bancário se algum dia colidir.
+            for cod, info in lookup_titulos_cartao.items():
+                lookup_titulos.setdefault(cod, info)
 
         for conta in contas:
             extrato = buscar_extrato(conta["nCodCC"], empresa["app_key"], empresa["app_secret"])
@@ -1925,15 +2023,20 @@ def coletar_dados() -> list:
                 # mesma data que gera o status.
                 status_titulo = info_titulo.get("status") or "-"
                 data_conciliacao_titulo = (m.get("dDataConciliacao") or "").strip()
-                # Cartão de crédito nunca tem título/status real (pulamos de
-                # propósito a busca no ListarMovimentos pra cartão, já que a
-                # Omie sempre retorna erro 500 nesse endpoint pra esse tipo
-                # de conta). Assumimos "PAGO" para esses lançamentos, já que
-                # um gasto que aparece na fatura já é um gasto efetivado —
-                # não existe "a vencer"/"previsto" pra cartão como existe
-                # pra título bancário.
+                # Cartão de crédito não tem status via ListarMovimentos (esse
+                # endpoint sempre retorna erro 500 pra conta tipo cartão),
+                # mas agora pode vir de buscar_titulos_pagar_receber_cartao
+                # (Contas a Pagar/Receber), que já foi cruzado acima em
+                # info_titulo -- se veio, usamos o status real (ex: título
+                # ainda "A VENCER" na fatura futura do cartão). Se não veio
+                # (título não encontrado, sem rateio, ou lançamento direto
+                # de tarifa/juros sem título formal), mantemos a suposição
+                # de "PAGO" que já usávamos antes, já que um gasto que
+                # aparece na fatura já é um gasto efetivado -- sem essa
+                # suposição, esses casos ficariam sem Situação nenhuma.
                 if conta["tipo"] == "cartao":
-                    status_titulo = "PAGO"
+                    if status_titulo == "-":
+                        status_titulo = "PAGO"
                 elif status_titulo == "-" and data_conciliacao_titulo:
                     # Tarifas, taxas e débitos/créditos diretos (ex: "Tarifas
                     # e Serviços Bancários") não passam pelo módulo de
