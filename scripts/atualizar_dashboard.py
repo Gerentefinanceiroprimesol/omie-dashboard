@@ -1686,12 +1686,13 @@ def buscar_departamentos_cadastro(app_key: str, app_secret: str) -> dict:
     return {d["codigo"]: d["descricao"] for d in todos}
 
 
-def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key: str, app_secret: str) -> dict:
+def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key: str, app_secret: str) -> tuple:
     """Busca os Movimentos Financeiros de uma conta (mês a mês, para evitar
     o limite de registros por chamada), pedindo a distribuição por
     departamento. Monta {codigo_lancamento: {"departamento": ..., "observacao": ..., "status": ...}}.
 
-    O código usado como chave do lookup depende se o título já foi pago:
+    O código usado como chave do lookup PRINCIPAL depende se o título já
+    foi pago:
     - Título JÁ PAGO: existe um movimento bancário real, e a Omie expõe o
       código dele em nCodMovCC — que é o mesmo código que aparece no
       extrato como nCodLancamento (ponte confirmada via teste real).
@@ -1701,17 +1702,36 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
       na linha de previsão do extrato — então cruzamos por nCodTitulo
       (confirmado testando o título da SOLARMARKET, previsão 10/08/2026).
 
+    Só que esse cruzamento (nCodMovCC/nCodTitulo == nCodLancamento) FALHA
+    para pagamentos confirmados via arquivo de retorno de integração
+    bancária (CNAB) — confirmado ao vivo em 13/08/2026 com o boleto do
+    Mercado Pago de R$ 761,00 (23/07/2026, Bradesco Matriz): o extrato
+    tinha nCodLancamento/nCodLancRelac = 11698643399, mas o título tinha
+    nCodTitulo = 11698334335 — nenhuma relação entre os dois códigos.
+    Nesse mesmo teste, porém, o "Nosso Número" do boleto batia
+    perfeitamente entre os dois lados ("PGIT2500000000000944" tanto em
+    cNossoNumero no extrato quanto em cNumBoleto no título) — por isso
+    essa função monta TAMBÉM um segundo lookup, indexado por cNumBoleto,
+    pra servir de segunda tentativa de cruzamento (ver coletar_dados()).
+
     A "observacao" aqui é a observação real do TÍTULO (Contas a Pagar/
     Receber) — diferente da observação do extrato bancário, que às vezes
-    só traz uma mensagem genérica de importação/integração do banco.
+    só traz uma mensagem genérica de importação/integração do banco. Vale
+    notar que, em alguns testes (13/08/2026), esse campo veio vazio direto
+    da Omie mesmo com o título tendo observação preenchida na tela — nesse
+    caso a concatenação em coletar_dados() simplesmente usa só a
+    observação do extrato, não tem o que fazer sem outro endpoint.
 
     Se alguma chamada falhar (a Omie retornou erro 500 em algumas
     combinações de conta/mês/página durante os testes), o erro é
     registrado e a busca segue para o próximo mês, em vez de travar o
     script inteiro — melhor ter dados incompletos do que o dashboard
     inteiro não ser publicado.
+
+    Retorna (lookup_por_codigo, lookup_por_boleto).
     """
     lookup = {}
+    lookup_por_boleto = {}
     hoje = datetime.now()
     # Mês/ano "2 meses à frente de hoje" -- a partir daqui, ListarMovimentos
     # historicamente quase sempre retorna 500 (não tem título previsto tão
@@ -1796,31 +1816,53 @@ def buscar_movimentos_financeiros(nCodCC: int, nomes_departamento: dict, app_key
                 status_titulo = (detalhes.get("cStatus") or "").strip()
                 data_previsao_titulo = (detalhes.get("dDtPrevisao") or "").strip()
 
-                lookup[cod_mov] = {
+                info = {
                     "departamento": desc_depto,
                     "departamentosRateio": lista_depto,
                     "observacao": observacao_titulo,
                     "status": status_titulo,
                     "dataPrevisao": data_previsao_titulo,
                 }
+                lookup[cod_mov] = info
+
+                # "Nosso Número" do boleto (cNumBoleto aqui, cNossoNumero no
+                # extrato) -- segunda chave de cruzamento, usada quando
+                # nCodMovCC/nCodTitulo não bate com nCodLancamento/
+                # nCodLancRelac do extrato (ver docstring da função e
+                # coletar_dados()). Nem todo título tem boleto (Pix,
+                # transferência, débito direto), então só indexa quando o
+                # campo vier preenchido.
+                num_boleto = (detalhes.get("cNumBoleto") or "").strip()
+                if num_boleto:
+                    lookup_por_boleto[num_boleto] = info
 
             total_paginas = data.get("nTotPaginas", 1)
             if pagina >= total_paginas or not movimentos:
                 break
             pagina += 1
-    return lookup
+    return lookup, lookup_por_boleto
 
 
-def montar_lookup_titulos(contas: list, app_key: str, app_secret: str) -> dict:
+def montar_lookup_titulos(contas: list, app_key: str, app_secret: str) -> tuple:
     """Monta {nCodMovCC: {"departamento": ..., "observacao": ...}} cruzando
     o cadastro de departamentos com os Movimentos Financeiros de cada
-    conta de UMA empresa (identificada pelas credenciais informadas)."""
+    conta de UMA empresa (identificada pelas credenciais informadas).
+
+    Retorna (lookup_geral, lookup_geral_boleto) -- o segundo dicionário é o
+    cruzamento alternativo por "Nosso Número" do boleto (cNumBoleto), usado
+    como segunda tentativa quando nCodMovCC/nCodTitulo não bate com
+    nCodLancamento/nCodLancRelac do extrato (ver buscar_movimentos_financeiros
+    e coletar_dados())."""
     nomes_departamento = buscar_departamentos_cadastro(app_key, app_secret)
     lookup_geral = {}
+    lookup_geral_boleto = {}
     for conta in contas:
-        lookup_conta = buscar_movimentos_financeiros(conta["nCodCC"], nomes_departamento, app_key, app_secret)
+        lookup_conta, lookup_conta_boleto = buscar_movimentos_financeiros(
+            conta["nCodCC"], nomes_departamento, app_key, app_secret
+        )
         lookup_geral.update(lookup_conta)
-    return lookup_geral
+        lookup_geral_boleto.update(lookup_conta_boleto)
+    return lookup_geral, lookup_geral_boleto
 
 
 def buscar_titulos_pagar_receber_cartao(app_key: str, app_secret: str) -> dict:
@@ -1979,7 +2021,9 @@ def coletar_dados() -> list:
         # que sempre falhariam mesmo.
         contas_bancarias = [c for c in contas if c["tipo"] == "banco"]
         contas_cartao = [c for c in contas if c["tipo"] == "cartao"]
-        lookup_titulos = montar_lookup_titulos(contas_bancarias, empresa["app_key"], empresa["app_secret"])
+        lookup_titulos, lookup_titulos_boleto = montar_lookup_titulos(
+            contas_bancarias, empresa["app_key"], empresa["app_secret"]
+        )
 
         # Cartão não tem departamento/status via ListarMovimentos (erro 500
         # -- comentário acima), mas TEM via Contas a Pagar/Receber, que não
@@ -2045,6 +2089,26 @@ def coletar_dados() -> list:
                     cod_mov_relac = m.get("nCodLancRelac")
                     if cod_mov_relac:
                         info_titulo = lookup_titulos.get(cod_mov_relac, {})
+                if not info_titulo:
+                    # Terceira tentativa: cruzar pelo "Nosso Número" do
+                    # boleto (cNossoNumero no extrato / cNumBoleto no
+                    # título). Cobre o caso de pagamentos confirmados via
+                    # arquivo de retorno de integração bancária (CNAB) onde
+                    # nem nCodLancamento nem nCodLancRelac batem com
+                    # nCodMovCC/nCodTitulo -- confirmado ao vivo em
+                    # 13/08/2026 com o boleto do Mercado Pago de R$ 761,00
+                    # (23/07/2026, Bradesco Matriz): os códigos de
+                    # lançamento eram completamente diferentes
+                    # (11698643399 no extrato vs. 11698334335 no título),
+                    # mas cNossoNumero/cNumBoleto batiam exatamente
+                    # ("PGIT2500000000000944" nos dois lados). Só se aplica
+                    # a título com boleto de verdade -- Pix, transferência e
+                    # débito direto não têm "Nosso Número", então o
+                    # ".get()" simplesmente não encontra nada e a gente
+                    # segue pras próximas tentativas.
+                    nosso_numero = (m.get("cNossoNumero") or "").strip()
+                    if nosso_numero:
+                        info_titulo = lookup_titulos_boleto.get(nosso_numero, {})
                 if not info_titulo and conta["tipo"] == "cartao":
                     # Testado ao vivo em 13/08/2026 que nCodLancamento/
                     # nCodLancRelac do extrato de cartão NÃO existem como
