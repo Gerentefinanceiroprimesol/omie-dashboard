@@ -20,6 +20,7 @@ import os
 import json as jsonlib
 import html as htmllib
 import time
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 import requests
 
@@ -1838,16 +1839,27 @@ def buscar_titulos_pagar_receber_cartao(app_key: str, app_secret: str) -> dict:
     na tela do título (cDesDep = nome do departamento, nPerDep = % do
     rateio).
 
-    Retorna {codigo_lancamento_omie: {"departamento": ..., "departamentosRateio": [...], "status": ...}}.
-    Essa chave é cruzada, em coletar_dados(), com o nCodLancamento do
-    extrato de cartão -- mesmo padrão de ponte que a busca de bancos já
-    usa entre nCodMovCC/nCodTitulo e nCodLancamento (ver
-    buscar_movimentos_financeiros). Essa ponte específica para cartão
-    ainda não foi 100% confirmada lançamento a lançamento -- mas o pior
-    cenário, se ela não bater para algum caso, é o lançamento continuar
-    "-" como já era antes desta função existir (sem regressão possível).
+    IMPORTANTE sobre a chave de cruzamento: testado ao vivo em 13/08/2026
+    que o nCodLancamento do extrato de cartão NÃO é o mesmo código que
+    codigo_lancamento_omie aqui (diferente do que acontece pra título
+    bancário, onde nCodMovCC/nCodTitulo == nCodLancamento -- ver
+    buscar_movimentos_financeiros). ConsultarContaPagar com o
+    nCodLancamento do extrato retornou "Lançamento não cadastrado".
+
+    Só que também foi confirmado que codigo_cliente_fornecedor AQUI é o
+    MESMO código que aparece como nCodCliente no extrato do cartão (mesmo
+    cadastro de cliente/fornecedor, usado nos dois módulos). Por isso essa
+    função indexa por (codigo_cliente_fornecedor, valor) em vez de por
+    código de lançamento -- é a chave que efetivamente cruza com o
+    extrato de cartão (ver _buscar_info_titulo_cartao, usada em
+    coletar_dados()).
+
+    Retorna {(codigo_cliente_fornecedor, valor_arredondado_2_casas): [(data_vencimento, info), ...]}.
+    A lista existe porque o mesmo cliente pode ter mais de um título com o
+    mesmo valor (ex: assinatura mensal recorrente) -- o desempate por data
+    acontece em _buscar_info_titulo_cartao.
     """
-    lookup = {}
+    lookup = defaultdict(list)
     fontes = (
         ("financas/contapagar", "ListarContasPagar", "conta_pagar_cadastro"),
         ("financas/contareceber", "ListarContasReceber", "conta_receber_cadastro"),
@@ -1869,12 +1881,13 @@ def buscar_titulos_pagar_receber_cartao(app_key: str, app_secret: str) -> dict:
 
             titulos = data.get(chave_resposta, []) or []
             for t in titulos:
-                cod = t.get("codigo_lancamento_omie")
+                cod_cliente = t.get("codigo_cliente_fornecedor")
+                valor = t.get("valor_documento")
                 distribuicao = t.get("distribuicao") or []
-                if not cod or not distribuicao:
-                    # Sem código pra cruzar ou sem rateio cadastrado nesse
-                    # título -- não dá pra usar, o lançamento continua "-"
-                    # como já era.
+                if not cod_cliente or valor is None or not distribuicao:
+                    # Sem cliente/valor pra cruzar ou sem rateio cadastrado
+                    # nesse título -- não dá pra usar, o lançamento
+                    # continua "-" como já era.
                     continue
 
                 if len(distribuicao) == 1:
@@ -1889,17 +1902,61 @@ def buscar_titulos_pagar_receber_cartao(app_key: str, app_secret: str) -> dict:
                     for d in distribuicao
                 ]
 
-                lookup[cod] = {
+                info = {
                     "departamento": desc_depto,
                     "departamentosRateio": lista_depto,
                     "status": (t.get("status_titulo") or "").strip(),
                 }
+                data_venc = t.get("data_vencimento") or t.get("data_previsao") or ""
+                chave = (cod_cliente, round(valor, 2))
+                lookup[chave].append((data_venc, info))
 
             total_paginas = data.get("total_de_paginas", 1)
             if pagina >= total_paginas or not titulos:
                 break
             pagina += 1
-    return lookup
+    return dict(lookup)
+
+
+def _buscar_info_titulo_cartao(lookup_cartao: dict, cod_cliente, valor, data_str: str, tolerancia_dias: int = 5) -> dict:
+    """Busca em lookup_cartao (montado por buscar_titulos_pagar_receber_cartao)
+    o título que corresponde a um lançamento de CARTÃO do extrato, cruzando
+    por (código do cliente/fornecedor, valor) -- não existe código de
+    lançamento em comum entre os dois módulos pra cartão (ver comentário em
+    buscar_titulos_pagar_receber_cartao).
+
+    Se houver só 1 título candidato pra esse cliente+valor, usa ele direto.
+    Se houver mais de um (ex: assinatura mensal com o mesmo valor todo
+    mês), desempata pela data de vencimento mais próxima da data do
+    lançamento no extrato -- só aceita se a diferença for de até
+    `tolerancia_dias` dias, senão desiste (devolve {} = "-", igual ao
+    comportamento de antes) em vez de arriscar cruzar com o mês errado."""
+    if not cod_cliente or not lookup_cartao:
+        return {}
+    candidatos = lookup_cartao.get((cod_cliente, round(abs(valor or 0), 2)))
+    if not candidatos:
+        return {}
+    if len(candidatos) == 1:
+        return candidatos[0][1]
+
+    try:
+        data_lanc = datetime.strptime(data_str, "%d/%m/%Y")
+    except (ValueError, TypeError):
+        return {}
+
+    melhor_info, melhor_diff = None, None
+    for data_venc_str, info in candidatos:
+        try:
+            data_venc = datetime.strptime(data_venc_str, "%d/%m/%Y")
+        except (ValueError, TypeError):
+            continue
+        diff = abs((data_venc - data_lanc).days)
+        if melhor_diff is None or diff < melhor_diff:
+            melhor_info, melhor_diff = info, diff
+
+    if melhor_info is not None and melhor_diff is not None and melhor_diff <= tolerancia_dias:
+        return melhor_info
+    return {}
 
 
 def coletar_dados() -> list:
@@ -1932,14 +1989,17 @@ def coletar_dados() -> list:
         # Sol Cabo Frio, PS Energia). Roda pra QUALQUER empresa com cartão --
         # inclui automaticamente Prime Sol Lagos, sem precisar de código
         # separado por empresa.
+        #
+        # Fica num dicionário À PARTE de lookup_titulos (não dá pra juntar
+        # os dois) porque a chave é diferente: pra banco é o código do
+        # lançamento (nCodMovCC/nCodTitulo == nCodLancamento do extrato);
+        # pra cartão, testado ao vivo em 13/08/2026 que esse código NÃO
+        # bate entre os dois módulos -- o que bate é (cliente, valor), daí
+        # o cruzamento pra cartão usar _buscar_info_titulo_cartao mais
+        # abaixo, por lançamento, em vez de um .get() direto pela chave.
+        lookup_titulos_cartao = {}
         if contas_cartao:
             lookup_titulos_cartao = buscar_titulos_pagar_receber_cartao(empresa["app_key"], empresa["app_secret"])
-            # setdefault: nunca sobrescreve uma chave que já veio do lookup
-            # de bancos -- não deveria colidir (são universos de títulos
-            # diferentes), mas por segurança preferimos manter o dado
-            # bancário se algum dia colidir.
-            for cod, info in lookup_titulos_cartao.items():
-                lookup_titulos.setdefault(cod, info)
 
         for conta in contas:
             extrato = buscar_extrato(conta["nCodCC"], empresa["app_key"], empresa["app_secret"])
@@ -1985,6 +2045,19 @@ def coletar_dados() -> list:
                     cod_mov_relac = m.get("nCodLancRelac")
                     if cod_mov_relac:
                         info_titulo = lookup_titulos.get(cod_mov_relac, {})
+                if not info_titulo and conta["tipo"] == "cartao":
+                    # Testado ao vivo em 13/08/2026 que nCodLancamento/
+                    # nCodLancRelac do extrato de cartão NÃO existem como
+                    # código de título em Contas a Pagar/Receber (diferente
+                    # do que acontece com título bancário) -- pra cartão, o
+                    # cruzamento é por (cliente, valor[, data]) -- ver
+                    # _buscar_info_titulo_cartao.
+                    info_titulo = _buscar_info_titulo_cartao(
+                        lookup_titulos_cartao,
+                        m.get("nCodCliente"),
+                        m.get("nValorDocumento", 0),
+                        m.get("dDataLancamento", ""),
+                    )
 
                 # Concatena a observação real do título (Contas a Pagar/Receber)
                 # com a observação do extrato bancário, separadas por " / ",
