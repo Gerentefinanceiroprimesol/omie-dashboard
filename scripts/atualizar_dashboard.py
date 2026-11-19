@@ -1506,6 +1506,7 @@ if _key and _secret:
             {"id": "santander", "nome": "Santander", "tipo": "banco", "nCodCC": 11236843385},
             {"id": "sicredi", "nome": "Sicredi", "tipo": "banco", "nCodCC": 11239054225},
             {"id": "bradesco", "nome": "Bradesco", "tipo": "banco", "nCodCC": 11431467344},
+            {"id": "stone_matriz", "nome": "Stone", "tipo": "banco", "nCodCC": 11745560455},
             {"id": "cartao_sicoob", "nome": "Cartão Sicoob Matriz", "tipo": "cartao", "nCodCC": 11574015480},
             {"id": "cartao_itau", "nome": "Cartão Itaú Matriz", "tipo": "cartao", "nCodCC": 11693512362},
         ],
@@ -1521,6 +1522,7 @@ if _key and _secret:
         "app_secret": _secret,
         "contas": [
             {"id": "sicoob_lagos", "nome": "Sicoob Lagos", "tipo": "banco", "nCodCC": 10113758384},
+            {"id": "itau_pelinca_lagos", "nome": "Itaú Prime Pelinca", "tipo": "banco", "nCodCC": 10616094565},
             {"id": "mastercard_lagos", "nome": "Cartão Sicoob Lagos", "tipo": "cartao", "nCodCC": 10453329672},
         ],
     })
