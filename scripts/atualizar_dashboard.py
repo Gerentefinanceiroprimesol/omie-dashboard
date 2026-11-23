@@ -2431,18 +2431,29 @@ def gerar_html(contas: list) -> str:
     # Check) -- não faz parte do relatório em si, então não exibimos.
     dfc_linhas_visiveis = [x for x in DFC_LINHAS if x["linha"] <= 195]
 
+    # DFC = caixa REALIZADO: só entram lançamentos já conciliados no Omie
+    # (Data de Conciliação preenchida). Títulos em aberto/atrasados e pagos
+    # ainda sem conciliação bancária ficam de fora do DFC (continuam na aba
+    # Lançamentos e no DRE, que é por competência). Pedido do Fabrício em
+    # 23/11/2026 -- antes o DFC somava o extrato inteiro e, em Out/2026,
+    # isso incluía ~R$ 490 mil de títulos WEG atrasados como se fossem caixa.
+    def _conciliado(l):
+        return bool((l.get("dataConciliacao") or "").strip())
+    lancamentos_dfc = [l for l in todos_lancamentos_grupo if _conciliado(l)]
+    lancamentos_dfc_com_empresa = [l for l in lancamentos_com_empresa if _conciliado(l)]
+
     # "Prova dos 9": lançamentos (Jul/2026 em diante) cujo valor não bateu
     # 100% com nenhuma linha do respectivo relatório -- vira um alerta
     # agregado, com lista expansível, logo acima da tabela.
     alerta_dfc = montar_alerta_nao_classificados_html(
-        calcular_nao_classificados(dfc_linhas_visiveis, lancamentos_com_empresa, meses_dinamicos), "dfc",
+        calcular_nao_classificados(dfc_linhas_visiveis, lancamentos_dfc_com_empresa, meses_dinamicos), "dfc",
     )
     alerta_dre = montar_alerta_nao_classificados_html(
         calcular_nao_classificados(DRE_LINHAS, lancamentos_com_empresa, meses_dinamicos), "dre",
     )
 
     html_dfc = montar_tabela_dre_dfc_html(
-        "Demonstrativo de Fluxo de Caixa (DFC)", dfc_linhas_visiveis, todos_lancamentos_grupo,
+        "Demonstrativo de Fluxo de Caixa (DFC) — somente lançamentos conciliados", dfc_linhas_visiveis, lancamentos_dfc,
         meses_dinamicos, MANUAL_FATURAMENTO_KIT, MANUAL_FOLHA, MANUAL_WEG, 8, alerta_dfc,
     )
     html_dre = montar_tabela_dre_dfc_html(
