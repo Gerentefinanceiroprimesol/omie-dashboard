@@ -2439,8 +2439,29 @@ def gerar_html(contas: list) -> str:
     # isso incluía ~R$ 490 mil de títulos WEG atrasados como se fossem caixa.
     def _conciliado(l):
         return bool((l.get("dataConciliacao") or "").strip())
-    lancamentos_dfc = [l for l in todos_lancamentos_grupo if _conciliado(l)]
-    lancamentos_dfc_com_empresa = [l for l in lancamentos_com_empresa if _conciliado(l)]
+
+    # Exclusões manuais do DFC: lançamentos conferidos com o Fabrício que não
+    # devem entrar no fluxo de caixa. Cada item precisa bater data + valor +
+    # categoria + início do cliente. Hoje:
+    # - 04/09/2026, Sicoob Matriz, -R$ 100: saque em dinheiro lançado como
+    #   "Saída de Transferência" -- a empresa não tem caixinha, então a
+    #   "entrada" nunca existe e a linha de Transferências não zerava (23/11/2026).
+    EXCLUSOES_MANUAIS_DFC = [
+        {"data": "04/09/2026", "valor": -100.0, "categoria": "Saída de Transferência",
+         "cliente_comeca_com": "Transf. Sicoob Matriz"},
+    ]
+
+    def _excluido_manual(l):
+        for e in EXCLUSOES_MANUAIS_DFC:
+            if (l.get("data") == e["data"]
+                    and abs((l.get("valor") or 0) - e["valor"]) < 0.01
+                    and (l.get("categoria") or "").strip() == e["categoria"]
+                    and (l.get("cliente") or "").startswith(e["cliente_comeca_com"])):
+                return True
+        return False
+
+    lancamentos_dfc = [l for l in todos_lancamentos_grupo if _conciliado(l) and not _excluido_manual(l)]
+    lancamentos_dfc_com_empresa = [l for l in lancamentos_com_empresa if _conciliado(l) and not _excluido_manual(l)]
 
     # "Prova dos 9": lançamentos (Jul/2026 em diante) cujo valor não bateu
     # 100% com nenhuma linha do respectivo relatório -- vira um alerta
